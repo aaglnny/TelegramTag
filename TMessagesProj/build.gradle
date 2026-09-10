@@ -129,6 +129,10 @@ android {
         minSdkVersion 21
         targetSdkVersion 36
 
+        ndk {
+            abiFilters "armeabi-v7a", "arm64-v8a"
+        }
+
         vectorDrawables.generatedDensities = ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi']
 
         multiDexEnabled true

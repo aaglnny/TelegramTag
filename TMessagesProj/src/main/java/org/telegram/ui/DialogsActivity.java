@@ -13733,6 +13733,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             args.putLong("user_id", UserConfig.getInstance(currentAccount).getClientUserId());
             presentFragment(new ChatActivity(args));
         });
+        io.add(R.drawable.outline_saved_24, "telegramTag beta", () -> {
+            Toast.makeText(getParentActivity(), "This is my telegramTag beta", Toast.LENGTH_SHORT).show();
+        });
         if (ApplicationLoader.applicationLoaderInstance != null) {
             ApplicationLoader.applicationLoaderInstance.addItemOptions(io);
         }
