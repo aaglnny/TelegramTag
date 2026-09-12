@@ -165,6 +165,7 @@ import org.telegram.messenger.ImageReceiver;
 import org.telegram.messenger.LanguageDetector;
 import org.telegram.messenger.LiteMode;
 import org.telegram.messenger.LocaleController;
+import org.telegram.messenger.LocalSavedTagsController;
 import org.telegram.messenger.MediaController;
 import org.telegram.messenger.MediaDataController;
 import org.telegram.messenger.SendMessageChatArguments;
@@ -1248,6 +1249,9 @@ public class ChatActivity extends BaseFragment implements
 
     public final static int OPTION_VIEW_STATISTICS = 115;
     public final static int OPTION_WELCOME_REVERT = 116;
+    public final static int OPTION_LOCAL_TAGS = 117;
+    public final static int OPTION_LOCAL_GROUP_TAGS = 118;
+    public final static int OPTION_LOCAL_TAG_LOCATE = 119;
 
     private final static int[] allowedNotificationsDuringChatListAnimations = new int[]{
             NotificationCenter.messagesRead,
@@ -1553,7 +1557,7 @@ public class ChatActivity extends BaseFragment implements
 
         @Override
         public boolean validateGroupId(long groupId) {
-            MessageObject.GroupedMessages groupedMessages = groupedMessagesMap.get(groupId);
+            MessageObject.GroupedMessages groupedMessages = getGroup(groupId);
             return groupedMessages != null && groupedMessages.messages.size() > 1;
         }
     };
@@ -1566,7 +1570,7 @@ public class ChatActivity extends BaseFragment implements
 
         @Override
         public boolean validateGroupId(long groupId) {
-            MessageObject.GroupedMessages groupedMessages = groupedMessagesMap.get(groupId);
+            MessageObject.GroupedMessages groupedMessages = getGroup(groupId);
             return groupedMessages != null && groupedMessages.messages.size() > 1;
         }
 
@@ -1687,6 +1691,8 @@ public class ChatActivity extends BaseFragment implements
     private final static int charge_fee = 72;
 
     private final static int chat_menu_topic_create = 73;
+    private final static int local_tags = 75;
+    private final static int local_tag_message = 76;
 
     private final static int id_chat_compose_panel = 1000;
 
@@ -1796,11 +1802,12 @@ public class ChatActivity extends BaseFragment implements
 
             @Override
             public int checkPosition(int position, boolean selectionTop) {
+                ArrayList<MessageObject> messages = chatAdapter.getMessages();
                 int i = position - chatAdapter.messagesStartRow;
                 if (i >= 0 && i < messages.size()) {
                     MessageObject messageObject = messages.get(i);
                     if (messageObject.contentType == 0 && messageObject.hasValidGroupId()) {
-                        MessageObject.GroupedMessages groupedMessages = groupedMessagesMap.get(messageObject.getGroupId());
+                        MessageObject.GroupedMessages groupedMessages = getGroup(messageObject.getGroupId());
                         if (groupedMessages != null) {
                             MessageObject messageObject1 = groupedMessages.messages.get(selectionTop ? 0 : groupedMessages.messages.size() - 1);
                             return chatAdapter.messagesStartRow + messages.indexOf(messageObject1);
@@ -2869,6 +2876,8 @@ public class ChatActivity extends BaseFragment implements
 
         getNotificationCenter().addPostponeNotificationsCallback(postponeNotificationsWhileLoadingCallback);
         getNotificationCenter().addObserver(this, NotificationCenter.closeChats);
+        getNotificationCenter().addObserver(this, NotificationCenter.localSavedTagsUpdated);
+        getNotificationCenter().addObserver(this, NotificationCenter.localSavedMessageTagsLoaded);
 
         if (chatMode != MODE_SCHEDULED) {
             if (threadMessageId == 0) {
@@ -3358,6 +3367,10 @@ public class ChatActivity extends BaseFragment implements
     @Override
     public void onFragmentDestroy() {
         super.onFragmentDestroy();
+        if (localTagFilter != null) {
+            localTagFilter.cancel();
+            localTagFilter = null;
+        }
         if (messageMetricsView != null) {
             messageMetricsView.finish();
         }
@@ -3396,6 +3409,8 @@ public class ChatActivity extends BaseFragment implements
         }
 
         getNotificationCenter().removeObserver(this, NotificationCenter.closeChats);
+        getNotificationCenter().removeObserver(this, NotificationCenter.localSavedTagsUpdated);
+        getNotificationCenter().removeObserver(this, NotificationCenter.localSavedMessageTagsLoaded);
 
         if (chatMode == 0 && AndroidUtilities.isTablet()) {
             getNotificationCenter().postNotificationName(NotificationCenter.openedChatChanged, dialog_id, getTopicId(), true);
@@ -3794,6 +3809,28 @@ public class ChatActivity extends BaseFragment implements
                             resourceProvider
                         );
                     });
+                } else if (id == local_tag_message) {
+                    ArrayList<MessageObject> selection = getLocalTagSelection();
+                    if (selection != null) {
+                        if (selection.size() == 1) {
+                            showDialog(new LocalSavedTagSheet(ChatActivity.this, selection, ChatActivity.this::clearSelectionMode));
+                        } else {
+                            showDialog(new AlertDialog.Builder(getParentActivity(), themeDelegate)
+                                    .setTitle(getString(R.string.LocalSavedTagsSet))
+                                    .setItems(new CharSequence[]{getString(R.string.LocalSavedTagsAdd), getString(R.string.LocalSavedTagsRemove)},
+                                            (dialog, which) -> showDialog(new LocalSavedTagSheet(ChatActivity.this, selection,
+                                                    which == 0 ? LocalSavedTagSheet.Mode.ADD : LocalSavedTagSheet.Mode.REMOVE, () -> {
+                                                clearSelectionMode();
+                                                BulletinFactory.of(ChatActivity.this).createSimpleBulletin(R.raw.done,
+                                                        LocaleController.formatString(R.string.LocalSavedTagsApplied, selection.size())).show();
+                                            })))
+                                    .create());
+                        }
+                    }
+                } else if (id == local_tags) {
+                    if (getUserConfig().isClientActivated() && dialog_id == getUserConfig().getClientUserId() && (chatMode == 0 || chatMode == MODE_SAVED)) {
+                        showDialog(new LocalSavedTagSheet(ChatActivity.this));
+                    }
                 } else if (id == tag_message) {
                     if (tagSelector == null) {
                         showTagSelector();
@@ -4418,6 +4455,9 @@ public class ChatActivity extends BaseFragment implements
 
             if (searchItem != null) {
                 headerItem.lazilyAddSubItem(search, R.drawable.msg_search, LocaleController.getString(R.string.Search));
+            }
+            if (getUserConfig().isClientActivated() && dialog_id == getUserConfig().getClientUserId() && chatMode == 0) {
+                headerItem.lazilyAddSubItem(local_tags, R.drawable.msg_settings, LocaleController.getString(R.string.LocalSavedTagsTitle));
             }
             if (ChatObject.isBoostSupported(currentChat) && (getUserConfig().isPremium() || ChatObject.isBoosted(chatInfo) || ChatObject.hasAdminRights(currentChat))) {
                 RLottieDrawable drawable = new RLottieDrawable(R.raw.boosts, "" + R.raw.boosts, dp(24), dp(24));
@@ -7790,6 +7830,14 @@ public class ChatActivity extends BaseFragment implements
         }
         contentView.addView(topPanelLayout, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.TOP));
 
+        if (chatMode == 0 && getUserConfig().isClientActivated() && getDialogId() == getUserConfig().getClientUserId()) {
+            localSavedTagsView = new LocalSavedTagsView(context, themeDelegate, this::selectLocalSavedTag);
+            topPanelLayout.addView(localSavedTagsView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
+            topPanelLayout.setPriority(localSavedTagsView, 9);
+            topPanelLayout.setViewVisible(localSavedTagsView, true, false);
+            localSavedTagsView.setTags(getMessagesController().getLocalSavedTagsController().getTags(), 0);
+        }
+
         contentView.addView(actionBar);
 
         overlayView = new View(context);
@@ -8976,6 +9024,19 @@ public class ChatActivity extends BaseFragment implements
         ViewCompat.setOnApplyWindowInsetsListener(fragmentView, this::onApplyWindowInsets);
         Timer.finish(t);
 
+        if (localSavedTagsView != null) {
+            getMessagesController().getLocalSavedTagsController().loadTags((tags, error) -> {
+                if (!isFinished && error == null) {
+                    localSavedTagsView.setTags(tags, localTagFilter == null ? 0 : localTagFilter.tagId);
+                    long tagId = getArguments().getLong("local_saved_tag", 0);
+                    getArguments().remove("local_saved_tag");
+                    if (tagId != 0) {
+                        selectLocalSavedTag(tagId);
+                    }
+                }
+            });
+        }
+
         return fragmentView;
     }
 
@@ -9148,6 +9209,9 @@ public class ChatActivity extends BaseFragment implements
     }
 
     public void setTagFilter(ReactionsLayoutInBubble.VisibleReaction reaction) {
+        if (localTagFilter != null) {
+            selectLocalSavedTag(0);
+        }
         if (actionBarSearchTags != null) {
             actionBarSearchTags.setChosen(reaction, true);
         }
@@ -9163,6 +9227,9 @@ public class ChatActivity extends BaseFragment implements
     }
 
     public void hitSearch() {
+        if (localTagFilter != null) {
+            selectLocalSavedTag(0);
+        }
         searchWas = true;
         updateSearchButtons(0, 0, -1);
         getMediaDataController().searchMessagesInChat(searchingQuery, dialog_id, mergeDialogId, classGuid, 0, threadMessageId, searchingUserMessages, searchingChatMessages, searchingReaction);
@@ -9189,6 +9256,9 @@ public class ChatActivity extends BaseFragment implements
         setFilterMessages(filter, false, true);
     }
     private void setFilterMessages(boolean filter, boolean ignoreMessageNotFound, boolean animated) {
+        if (localTagFilter != null) {
+            return;
+        }
         if (chatAdapter == null || chatAdapter.isFiltered == filter) return;
         chatAdapter.isFiltered = filter;
         createEmptyView(true);
@@ -9361,6 +9431,169 @@ public class ChatActivity extends BaseFragment implements
 
     private LongSparseArray<ArrayList<MessageObject>> filteredMessagesByDays;
     private LongSparseArray<MessageObject> filteredMessagesDict;
+    private LocalSavedTagsView localSavedTagsView;
+    private LocalSavedTagsController.FilterSession localTagFilter;
+    private final LongSparseArray<MessageObject.GroupedMessages> localTagGroups = new LongSparseArray<>();
+    private int localTagScrollPosition;
+    private int localTagScrollOffset;
+    private int localTagScrollMessageId;
+
+    private void selectLocalSavedTag(long tagId) {
+        if (getParentActivity() == null || isFinished) {
+            return;
+        }
+        if (tagId != 0 && chatMode == MODE_SAVED) {
+            Bundle args = new Bundle();
+            args.putLong("user_id", getUserConfig().getClientUserId());
+            args.putLong("local_saved_tag", tagId);
+            ChatActivity chat = new ChatActivity(args);
+            chat.setCurrentAccount(currentAccount);
+            presentFragment(chat);
+            return;
+        }
+        if (localSavedTagsView == null) {
+            return;
+        }
+        if (actionBar.isActionModeShowed()) {
+            clearSelectionMode();
+        }
+        if (tagId == 0) {
+            if (localTagFilter != null) {
+                localTagFilter.cancel();
+                localTagFilter = null;
+                localTagGroups.clear();
+                chatAdapter.isFiltered = false;
+                chatAdapter.filteredMessages.clear();
+                chatAdapter.updateRowsSafe();
+                chatAdapter.notifyDataSetChanged();
+                int position = localTagScrollPosition;
+                for (int i = 0; i < messages.size(); i++) {
+                    if (localTagScrollMessageId != 0 && messages.get(i).getId() == localTagScrollMessageId) {
+                        position = chatAdapter.messagesStartRow + i;
+                        break;
+                    }
+                }
+                chatLayoutManager.scrollToPositionWithOffset(Math.max(0, position), localTagScrollOffset);
+                createEmptyView(true);
+            }
+            localSavedTagsView.setTags(getMessagesController().getLocalSavedTagsController().getTags(), 0);
+            localSavedTagsView.setStatus(null, null);
+            return;
+        }
+        if (searching || searchingReaction != null || !TextUtils.isEmpty(searchingQuery)) {
+            actionBar.closeSearchField();
+            clearSearch();
+            searchingQuery = null;
+            searchingReaction = null;
+            searchingHashtag = null;
+            searchingUserMessages = null;
+            searchingChatMessages = null;
+        }
+        if (localTagFilter == null) {
+            localTagScrollPosition = chatLayoutManager.findFirstVisibleItemPosition();
+            View anchor = chatLayoutManager.findViewByPosition(localTagScrollPosition);
+            localTagScrollOffset = anchor == null ? 0 : getScrollingOffsetForView(anchor);
+            localTagScrollMessageId = anchor instanceof ChatMessageCell ? ((ChatMessageCell) anchor).getMessageObject().getId() : 0;
+        } else {
+            localTagFilter.cancel();
+        }
+        LocalSavedTagsController controller = getMessagesController().getLocalSavedTagsController();
+        localTagFilter = controller.createFilterSession(classGuid, tagId, messages, () -> {
+            if (!isFinished && localTagFilter != null) {
+                updateFilteredMessages(true);
+            }
+        });
+        chatAdapter.isFiltered = true;
+        localSavedTagsView.setTags(controller.getTags(), tagId);
+        localTagFilter.loadMore();
+    }
+
+    private void updateLocalFilteredMessages(boolean notify) {
+        ArrayList<MessageObject> results = localTagFilter.getMessages();
+        if (filteredMessagesDict == null) {
+            filteredMessagesDict = new LongSparseArray<>();
+        }
+        if (filteredMessagesByDays == null) {
+            filteredMessagesByDays = new LongSparseArray<>();
+        }
+        filteredMessagesDict.clear();
+        filteredMessagesByDays.clear();
+        localTagGroups.clear();
+        chatAdapter.filteredMessages.clear();
+        for (MessageObject message : results) {
+            if (message.stableId == 0) {
+                message.stableId = lastStableId++;
+            }
+            chatAdapter.filteredMessages.add(message);
+            filteredMessagesDict.put(message.getId(), message);
+            if (message.hasValidGroupId()) {
+                MessageObject.GroupedMessages group = localTagGroups.get(message.getGroupId());
+                if (group == null) {
+                    group = new MessageObject.GroupedMessages();
+                    group.groupId = message.getGroupId();
+                    group.reversed = reversed;
+                    localTagGroups.put(group.groupId, group);
+                }
+                group.messages.add(message);
+            }
+        }
+        for (int i = 0; i < localTagGroups.size(); i++) {
+            MessageObject.GroupedMessages group = localTagGroups.valueAt(i);
+            Collections.sort(group.messages, (a, b) -> Integer.compare(a.getId(), b.getId()));
+            group.calculate();
+        }
+        MessageObject previous = null;
+        for (int i = 0; i < chatAdapter.filteredMessages.size(); i++) {
+            MessageObject message = chatAdapter.filteredMessages.get(i);
+            if (reversed && i == 0 || previous != null && message.dateKeyInt != previous.dateKeyInt) {
+                putFilteredDate(i++, reversed ? message : previous);
+            }
+            ArrayList<MessageObject> day = filteredMessagesByDays.get(message.dateKeyInt);
+            if (day == null) {
+                day = new ArrayList<>();
+                filteredMessagesByDays.put(message.dateKeyInt, day);
+            }
+            day.add(message);
+            previous = message;
+        }
+        if (!reversed && previous != null) {
+            putFilteredDate(chatAdapter.filteredMessages.size(), previous);
+        }
+        chatAdapter.filteredEndReached = localTagFilter.isEndReached() || localTagFilter.getError() != null || localTagFilter.isScanLimitReached();
+        String status;
+        Runnable action = null;
+        if (localTagFilter.isLoading()) {
+            status = getString(R.string.LocalSavedTagsFilterLoading);
+        } else if (localTagFilter.getError() != null) {
+            status = getString(localTagFilter.isCacheOnly() ? R.string.LocalSavedTagsCacheIncomplete : R.string.LocalSavedTagsFilterRetry);
+            action = () -> localTagFilter.loadMore();
+        } else if (localTagFilter.isScanLimitReached()) {
+            status = LocaleController.formatString(R.string.LocalSavedTagsContinueHistory, results.size());
+            action = () -> localTagFilter.loadMore();
+        } else if (localTagFilter.isEndReached()) {
+            if (localTagFilter.tagId == LocalSavedTagsController.UNTAGGED) {
+                status = results.isEmpty() ? getString(R.string.LocalSavedTagsUntaggedEmpty)
+                        : LocaleController.formatString(R.string.LocalSavedTagsUntaggedEnd, results.size());
+                action = () -> selectLocalSavedTag(LocalSavedTagsController.UNTAGGED);
+            } else {
+                status = results.isEmpty() ? getString(R.string.LocalSavedTagsFilterEmpty)
+                        : LocaleController.formatString(R.string.LocalSavedTagsFilterEnd, results.size());
+            }
+        } else {
+            status = LocaleController.formatString(R.string.LocalSavedTagsFilterMore, results.size());
+            action = () -> localTagFilter.loadMore();
+        }
+        localSavedTagsView.setStatus(status, action);
+        if (notify) {
+            saveScrollOnFilterToggle(false, true);
+            showProgressView(false);
+            if (emptyViewContainer != null) {
+                emptyViewContainer.setVisibility(View.GONE);
+            }
+            chatListView.setEmptyView(null);
+            chatListView.setVisibility(View.VISIBLE);
+        }
+    }
 
     private void putFilteredDate(int index, MessageObject baseMsg) {
         TLRPC.Message dateMsg = new TLRPC.TL_message();
@@ -9408,6 +9641,10 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private void updateFilteredMessages(boolean notify) {
+        if (localTagFilter != null) {
+            updateLocalFilteredMessages(notify);
+            return;
+        }
         ArrayList<MessageObject> results = new ArrayList<>(MediaDataController.getInstance(currentAccount).getFoundMessageObjects());
         if (filteredMessagesDict == null) {
             filteredMessagesDict = new LongSparseArray<>();
@@ -9458,7 +9695,7 @@ public class ChatActivity extends BaseFragment implements
             msg.isOutOwner();
 
             if (msg.hasValidGroupId()) {
-                MessageObject.GroupedMessages groupedMessages = groupedMessagesMap.get(msg.getGroupIdForUse());
+                MessageObject.GroupedMessages groupedMessages = getGroup(msg.getGroupIdForUse());
                 if (groupedMessages == null) {
                     groupedMessages = new MessageObject.GroupedMessages();
                     groupedMessages.reversed = reversed;
@@ -9532,7 +9769,7 @@ public class ChatActivity extends BaseFragment implements
             if (!obj.hasValidGroupId()) {
                 continue;
             }
-            MessageObject.GroupedMessages group = groupedMessagesMap.get(obj.getGroupId());
+            MessageObject.GroupedMessages group = getGroup(obj.getGroupId());
             if (group != null) {
                 for (int j = group.messages.size() - 1; j >= 0; --j) {
                     MessageObject groupmsg = group.messages.get(j);
@@ -10317,6 +10554,7 @@ public class ChatActivity extends BaseFragment implements
             actionModeViews.add(actionMode.addItemWithWidth(edit, R.drawable.msg_edit, dp(48), LocaleController.getString(R.string.Edit)));
             if (isSavedMessages) {
                 actionModeViews.add(actionMode.addItemWithWidth(tag_message, R.drawable.menu_tag_edit, dp(48), LocaleController.getString(R.string.AccDescrTagMessage)));
+                actionModeViews.add(actionMode.addItemWithWidth(local_tag_message, R.drawable.msg_settings, dp(48), LocaleController.getString(R.string.LocalSavedTagsSet)));
             }
             actionModeViews.add(actionMode.addItemWithWidth(star, R.drawable.msg_fave, dp(48), LocaleController.getString(R.string.AddToFavorites)));
             actionModeViews.add(actionMode.addItemWithWidth(copy, R.drawable.msg_copy, dp(48), LocaleController.getString(R.string.Copy)));
@@ -10336,6 +10574,7 @@ public class ChatActivity extends BaseFragment implements
         actionMode.setItemVisibility(star, selectedMessagesCanStarIds[0].size() + selectedMessagesCanStarIds[1].size() != 0 ? View.VISIBLE : View.GONE);
         actionMode.setItemVisibility(delete, cantDeleteMessagesCount == 0 ? View.VISIBLE : View.GONE);
         actionMode.setItemVisibility(tag_message, getUserConfig().isPremium() ? View.VISIBLE : View.GONE);
+        actionMode.setItemVisibility(local_tag_message, getLocalTagSelection() != null ? View.VISIBLE : View.GONE);
         actionMode.setItemVisibility(share, View.GONE);
     }
 
@@ -12413,7 +12652,7 @@ public class ChatActivity extends BaseFragment implements
     public MessageObject.GroupedMessages getValidGroupedMessage(MessageObject message) {
         MessageObject.GroupedMessages groupedMessages = null;
         if (message.getGroupId() != 0) {
-            groupedMessages = groupedMessagesMap.get(message.getGroupId());
+            groupedMessages = (localTagFilter == null ? groupedMessagesMap : localTagGroups).get(message.getGroupId());
             if (groupedMessages != null && (groupedMessages.messages.size() <= 1 || groupedMessages.getPosition(message) == null)) {
                 groupedMessages = null;
             }
@@ -13776,7 +14015,13 @@ public class ChatActivity extends BaseFragment implements
         }
         if (chatAdapter.isFiltered) {
             if (chatAdapter.loadingUpRow >= 0 && firstVisibleItem >= 0 && chatAdapter.loadingUpRow >= firstVisibleItem && chatAdapter.loadingUpRow <= lastVisibleItem) {
-                getMediaDataController().loadMoreSearchMessages(false);
+                if (localTagFilter != null) {
+                    if (localTagFilter.getError() == null && !localTagFilter.isScanLimitReached()) {
+                        localTagFilter.loadMore();
+                    }
+                } else {
+                    getMediaDataController().loadMoreSearchMessages(false);
+                }
             }
             return;
         }
@@ -16716,7 +16961,7 @@ public class ChatActivity extends BaseFragment implements
         dummyMessageCell.isAllChats = isAllChats();
         dummyMessageCell.isSideMenued = isSideMenued();
         dummyMessageCell.isSideMenuEnabled = isSideMenuEnabled();
-        return dummyMessageCell.computeHeight(object, groupedMessagesMap.get(object.getGroupId()), withGroupCaption);
+        return dummyMessageCell.computeHeight(object, getGroup(object.getGroupId()), withGroupCaption);
     }
 
     private void startMessageUnselect() {
@@ -16858,7 +17103,7 @@ public class ChatActivity extends BaseFragment implements
 
         chatScrollHelper.setScrollDirection(scrollDirection);
         if (!SCROLL_DEBUG_DELAY && object != null) {
-            MessageObject.GroupedMessages groupedMessages = groupedMessagesMap.get(object.getGroupId());
+            MessageObject.GroupedMessages groupedMessages = getGroup(object.getGroupId());
             if (object.getGroupId() != 0 && groupedMessages != null) {
                 MessageObject primary = groupedMessages.findPrimaryMessageObject();
                 if (primary != null) {
@@ -19057,9 +19302,9 @@ public class ChatActivity extends BaseFragment implements
                 return;
             }
             int index = messageObject.getDialogId() == dialog_id ? 0 : 1;
-            if (outside && messageObject.getGroupId() != 0) {
+            if (outside && messageObject.getGroupId() != 0 && getValidGroupedMessage(messageObject) != null) {
                 boolean hasUnselected = false;
-                MessageObject.GroupedMessages groupedMessages = groupedMessagesMap.get(messageObject.getGroupId());
+                MessageObject.GroupedMessages groupedMessages = getGroup(messageObject.getGroupId());
                 if (groupedMessages != null) {
                     int lastNum = 0;
                     for (int a = 0; a < groupedMessages.messages.size(); a++) {
@@ -19173,6 +19418,7 @@ public class ChatActivity extends BaseFragment implements
                 ActionBarMenuItem deleteItem = actionBar.createActionMode().getItem(delete);
                 ActionBarMenuItem tagItem = actionBar.createActionMode().getItem(tag_message);
                 ActionBarMenuItem shareItem = actionBar.createActionMode().getItem(share);
+                actionBar.createActionMode().setItemVisibility(local_tag_message, getLocalTagSelection() != null ? View.VISIBLE : View.GONE);
 
                 boolean noforwards = isPeerNoForwards() || hasSelectedNoforwardsMessage();
                 if (prevCantForwardCount == 0 && cantForwardMessagesCount != 0 || prevCantForwardCount != 0 && cantForwardMessagesCount == 0) {
@@ -19411,7 +19657,32 @@ public class ChatActivity extends BaseFragment implements
         updateVisibleRows();
     }
 
+    private ArrayList<MessageObject> getLocalTagSelection() {
+        if (!getUserConfig().isClientActivated() || getDialogId() != getUserConfig().getClientUserId()
+                || chatMode != 0 && chatMode != MODE_SAVED) {
+            return null;
+        }
+        ArrayList<MessageObject> result = new ArrayList<>();
+        LocalSavedTagsController controller = getMessagesController().getLocalSavedTagsController();
+        for (SparseArray<MessageObject> selected : selectedMessagesIds) {
+            for (int i = 0; i < selected.size(); i++) {
+                MessageObject message = selected.valueAt(i);
+                if (!controller.canTagMessage(message)) {
+                    return null;
+                }
+                result.add(message);
+            }
+        }
+        if (result.isEmpty()) {
+            return null;
+        }
+        return result;
+    }
+
     private void updateActionModeTitle() {
+        if (actionBar != null && selectedMessagesCountTextView != null) {
+            actionBar.createActionMode().setItemVisibility(local_tag_message, getLocalTagSelection() != null ? View.VISIBLE : View.GONE);
+        }
         if (!isReport()) {
             if (!actionBar.isActionModeShowed()) {
                 return;
@@ -20487,6 +20758,28 @@ public class ChatActivity extends BaseFragment implements
 
     @Override
     public void didReceivedNotification(int id, int account, final Object... args) {
+        if (id == NotificationCenter.localSavedTagsUpdated || id == NotificationCenter.localSavedMessageTagsLoaded) {
+            if (!isFinished && chatAdapter != null && getDialogId() == getUserConfig().getClientUserId()
+                    && (Long) args[0] == getDialogId() && (chatMode == 0 || chatMode == MODE_SAVED)) {
+                if (id == NotificationCenter.localSavedTagsUpdated && localSavedTagsView != null) {
+                    LocalSavedTagsController controller = getMessagesController().getLocalSavedTagsController();
+                    long tagId = localTagFilter == null ? 0 : localTagFilter.tagId;
+                    boolean exists = tagId == 0 || tagId == LocalSavedTagsController.UNTAGGED;
+                    for (org.telegram.messenger.LocalSavedTag tag : controller.getTags()) {
+                        exists |= tag.id == tagId;
+                    }
+                    if (!exists) {
+                        selectLocalSavedTag(0);
+                    } else if (localTagFilter != null && localTagFilter.hasTagChanges() && (args.length < 2 || args[1] != localTagFilter)) {
+                        // 动画延迟的旧通知到达时，新会话可能已经包含本次提交。
+                        selectLocalSavedTag(tagId);
+                    }
+                    localSavedTagsView.setTags(controller.getTags(), localTagFilter == null ? 0 : localTagFilter.tagId);
+                }
+                chatAdapter.notifyDataSetChanged();
+            }
+            return;
+        }
         if (id == NotificationCenter.messagesDidLoad) {
             didReceivedNotification_messagesDidLoad(id, account, args);
         } else {
@@ -20496,6 +20789,11 @@ public class ChatActivity extends BaseFragment implements
             didReceivedNotification5(id, account, args);
             didReceivedNotification6(id, account, args);
             didReceivedNotification7(id, account, args);
+        }
+        if (id == NotificationCenter.didReceiveNewMessages && localTagFilter != null
+                && localTagFilter.tagId == LocalSavedTagsController.UNTAGGED && (Long) args[0] == getDialogId()
+                && !(Boolean) args[2] && (Integer) args[3] == 0) {
+            selectLocalSavedTag(LocalSavedTagsController.UNTAGGED);
         }
     }
 
@@ -23347,6 +23645,9 @@ public class ChatActivity extends BaseFragment implements
             int loadIndex = did == dialog_id ? 0 : 1;
             doOnIdle(() -> {
                 replaceMessageObjects(messageObjects, loadIndex, false);
+                if (localTagFilter != null && did == dialog_id) {
+                    localTagFilter.replaceMessages(messageObjects);
+                }
             });
         } else if (id == NotificationCenter.notificationsSettingsUpdated) {
             updateTitleIcons();
@@ -23652,6 +23953,9 @@ public class ChatActivity extends BaseFragment implements
                 }
             }
         } else if (id == NotificationCenter.chatSearchResultsAvailable) {
+            if (localTagFilter != null) {
+                return;
+            }
             if (classGuid == (Integer) args[0]) {
                 updateSearchUpDownButtonVisibility(true);
                 boolean jumpToMessage = (Boolean) args[6];
@@ -23699,6 +24003,9 @@ public class ChatActivity extends BaseFragment implements
                 }
             }
         } else if (id == NotificationCenter.chatSearchResultsLoading) {
+            if (localTagFilter != null) {
+                return;
+            }
             if (classGuid == (Integer) args[0]) {
                 if (searchItem != null) {
                     searchItem.setShowSearchProgress(!TextUtils.isEmpty(searchingQuery) || searchingReaction != null);
@@ -32486,6 +32793,7 @@ public class ChatActivity extends BaseFragment implements
         animatorSet.start();
 
         addToSelectedMessages(message, listView);
+        actionMode.setItemVisibility(local_tag_message, getLocalTagSelection() != null ? View.VISIBLE : View.GONE);
 
         if (chatActivityEnterView != null) {
             chatActivityEnterView.preventInput = true;
@@ -32872,9 +33180,9 @@ public class ChatActivity extends BaseFragment implements
         final int currentChosenReactions = primaryMessage.getChoosenReactions().size();
         final boolean added = primaryMessage.selectReaction(visibleReaction, bigEmoji, fromDoubleTap);
         int messageIdForCell = primaryMessage.getId();
-        if (groupedMessagesMap.get(primaryMessage.getGroupId()) != null) {
+        if (getGroup(primaryMessage.getGroupId()) != null) {
             int flags = primaryMessage.shouldDrawReactionsInLayout() ? MessageObject.POSITION_FLAG_BOTTOM | MessageObject.POSITION_FLAG_LEFT : MessageObject.POSITION_FLAG_BOTTOM | MessageObject.POSITION_FLAG_RIGHT;
-            MessageObject messageObject = groupedMessagesMap.get(primaryMessage.getGroupId()).findMessageWithFlags(flags);
+            MessageObject messageObject = getGroup(primaryMessage.getGroupId()).findMessageWithFlags(flags);
             if (messageObject != null) {
                 messageIdForCell = messageObject.getId();
             }
@@ -32956,7 +33264,7 @@ public class ChatActivity extends BaseFragment implements
         if (fragmentView == null) {
             return;
         }
-        MessageObject.GroupedMessages group = groupedMessagesMap.get(message.getGroupId());
+        MessageObject.GroupedMessages group = getGroup(message.getGroupId());
         if (group != null) {
             if (chatListItemAnimator != null) {
                 chatListItemAnimator.groupWillChanged(group);
@@ -33298,6 +33606,24 @@ public class ChatActivity extends BaseFragment implements
         }
         boolean preserveDim = false;
         switch (option) {
+            case OPTION_LOCAL_TAG_LOCATE: {
+                int messageId = selectedObject.getId();
+                selectLocalSavedTag(0);
+                scrollToMessageId(messageId, 0, true, 0, true, 0);
+                break;
+            }
+            case OPTION_LOCAL_TAGS:
+            case OPTION_LOCAL_GROUP_TAGS: {
+                ArrayList<MessageObject> messages = new ArrayList<>();
+                MessageObject.GroupedMessages group = getValidGroupedMessage(selectedObject);
+                if (option == OPTION_LOCAL_GROUP_TAGS && group != null) {
+                    messages.addAll(group.messages);
+                } else {
+                    messages.add(selectedObject);
+                }
+                showDialog(new LocalSavedTagSheet(this, messages));
+                break;
+            }
             case OPTION_RETRY: {
                 final MessageObject object = selectedObject;
                 final MessageObject.GroupedMessages group = selectedObjectGroup;
@@ -34626,6 +34952,9 @@ public class ChatActivity extends BaseFragment implements
             return false;
         } else if (actionBar != null && actionBar.isActionModeShowed()) {
             if (invoked) clearSelectionMode();
+            return false;
+        } else if (localTagFilter != null) {
+            if (invoked) selectLocalSavedTag(0);
             return false;
         } else if (chatActivityEnterView != null && chatActivityEnterView.isPopupShowing()) {
             if (invoked) chatActivityEnterView.hidePopup(true);
@@ -37485,6 +37814,16 @@ public class ChatActivity extends BaseFragment implements
                     messageCell.isReportChat = isReport();
                     messageCell.isSavedChat = chatMode == MODE_SAVED;
                     messageCell.isSavedPreviewChat = chatMode == MODE_SAVED && isInsideContainer;
+                    if (getUserConfig().isClientActivated() && getDialogId() == getUserConfig().getClientUserId()
+                            && (chatMode == 0 || chatMode == MODE_SAVED)) {
+                        LocalSavedTagsController controller = getMessagesController().getLocalSavedTagsController();
+                        List<MessageObject> members = groupedMessages != null && !groupedMessages.isDocuments
+                                ? groupedMessages.messages : Collections.singletonList(message);
+                        controller.requestMessageTags(members);
+                        messageCell.setLocalSavedTags(message, controller.canTagMessage(message) ? LocalSavedTagsLayout.collect(members, controller) : null);
+                    } else {
+                        messageCell.setLocalSavedTags(message, null);
+                    }
                     messageCell.isBot = currentUser != null && currentUser.bot;
                     messageCell.isMegagroup = ChatObject.isChannel(currentChat) && currentChat.megagroup;
                     messageCell.isForum = ChatObject.isForum(currentChat);
@@ -38643,6 +38982,9 @@ public class ChatActivity extends BaseFragment implements
 
         @Override
         public void onSearchExpand() {
+            if (localTagFilter != null) {
+                selectLocalSavedTag(0);
+            }
             searching = true;
             updatePagedownButtonVisibility(true);
             updateSearchUpDownButtonVisibility(true);
@@ -38914,6 +39256,28 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private class ChatMessageCellDelegate implements ChatMessageCell.ChatMessageCellDelegate {
+        @Override
+        public void didPressLocalSavedTag(ChatMessageCell cell, long tagId) {
+            if (actionBar.isActionModeShowed()) {
+                return;
+            }
+            MessageObject message = cell.getMessageObject();
+            if (getMessagesController().getLocalSavedTagsController().canTagMessage(message)) {
+                if (tagId > 0) {
+                    selectLocalSavedTag(tagId);
+                    return;
+                }
+                MessageObject.GroupedMessages group = getValidGroupedMessage(message);
+                ArrayList<MessageObject> members = new ArrayList<>();
+                if (group != null && !group.isDocuments) {
+                    members.addAll(group.messages);
+                } else {
+                    members.add(message);
+                }
+                showDialog(new LocalSavedTagSheet(ChatActivity.this, members));
+            }
+        }
+
         @Override
         public boolean isReplyOrSelf() {
             return UserObject.isReplyUser(currentUser) || UserObject.isUserSelf(currentUser);
@@ -39223,7 +39587,7 @@ public class ChatActivity extends BaseFragment implements
 
             ArrayList<MessageObject> arrayList = null;
             if (messageObject.getGroupId() != 0) {
-                MessageObject.GroupedMessages groupedMessages = groupedMessagesMap.get(messageObject.getGroupId());
+                MessageObject.GroupedMessages groupedMessages = getGroup(messageObject.getGroupId());
                 if (groupedMessages != null) {
                     arrayList = groupedMessages.messages;
                 }
@@ -39286,7 +39650,7 @@ public class ChatActivity extends BaseFragment implements
             } else {
                 ArrayList<MessageObject> arrayList = null;
                 if (messageObject.getGroupId() != 0) {
-                    MessageObject.GroupedMessages groupedMessages = groupedMessagesMap.get(messageObject.getGroupId());
+                    MessageObject.GroupedMessages groupedMessages = getGroup(messageObject.getGroupId());
                     if (groupedMessages != null) {
                         arrayList = groupedMessages.messages;
                     }
@@ -39314,7 +39678,7 @@ public class ChatActivity extends BaseFragment implements
                             sourceView = StoryRecorder.SourceView.fromShareCell((ShareDialogCell) cell);
                         }
                         final ArrayList<MessageObject> messageObjects = new ArrayList<>();
-                        MessageObject.GroupedMessages groupedMessages = messageObject.getGroupId() != 0 ? groupedMessagesMap.get(messageObject.getGroupId()) : null;
+                        MessageObject.GroupedMessages groupedMessages = messageObject.getGroupId() != 0 ? getGroup(messageObject.getGroupId()) : null;
                         if (groupedMessages != null) {
                             messageObjects.addAll(groupedMessages.messages);
                         } else {
@@ -44257,7 +44621,7 @@ public class ChatActivity extends BaseFragment implements
     }
 
     public MessageObject.GroupedMessages getGroup(long id) {
-        return groupedMessagesMap.get(id);
+        return (localTagFilter == null ? groupedMessagesMap : localTagGroups).get(id);
     }
 
     private MessageSkeleton getNewSkeleton(boolean noAvatar) {
@@ -44646,7 +45010,7 @@ public class ChatActivity extends BaseFragment implements
 
         ArrayList<MessageObject> arrayList = null;
         if (messageObject.getGroupId() != 0) {
-            MessageObject.GroupedMessages groupedMessages = groupedMessagesMap.get(messageObject.getGroupId());
+            MessageObject.GroupedMessages groupedMessages = getGroup(messageObject.getGroupId());
             if (groupedMessages != null) {
                 arrayList = groupedMessages.messages;
             }
@@ -45670,6 +46034,25 @@ public class ChatActivity extends BaseFragment implements
         final int type = getMessageType(message);
         final boolean isEphemeral = message.isEphemeral();
         final boolean isEphemeralFromBot = isEphemeral && !message.isOut();
+
+        if (getUserConfig().isClientActivated() && getDialogId() == getUserConfig().getClientUserId()
+                && (chatMode == 0 || chatMode == MODE_SAVED)
+                && getMessagesController().getLocalSavedTagsController().canTagMessage(message)) {
+            if (localTagFilter != null) {
+                items.add(getString(R.string.LocalSavedTagsLocate));
+                options.add(OPTION_LOCAL_TAG_LOCATE);
+                icons.add(R.drawable.msg_search);
+            }
+            items.add(LocaleController.getString(R.string.LocalSavedTagsSet));
+            options.add(OPTION_LOCAL_TAGS);
+            icons.add(R.drawable.menu_tag_edit);
+            MessageObject.GroupedMessages localGroup = getValidGroupedMessage(message);
+            if (localGroup != null && localGroup.messages.size() > 1) {
+                items.add(LocaleController.getString(R.string.LocalSavedTagsSetGroup));
+                options.add(OPTION_LOCAL_GROUP_TAGS);
+                icons.add(R.drawable.menu_tag_edit);
+            }
+        }
 
 
         boolean allowChatActions = true;

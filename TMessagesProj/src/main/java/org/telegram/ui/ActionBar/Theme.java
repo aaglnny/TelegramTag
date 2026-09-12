@@ -7583,7 +7583,8 @@ public class Theme {
                         } else {
                             if ((idx = line.indexOf('=')) != -1) {
                                 String key = line.substring(0, idx);
-                                String param = line.substring(idx + 1);
+                                // Windows 换行的回车不能进入颜色数值解析，否则会得到透明色。
+                                String param = line.substring(idx + 1).trim();
                                 int value;
                                 if (param.length() > 0 && param.charAt(0) == '#') {
                                     try {

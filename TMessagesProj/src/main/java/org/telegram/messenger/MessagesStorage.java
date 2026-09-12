@@ -7819,6 +7819,117 @@ public class MessagesStorage extends BaseController {
         return result[0];
     }
 
+    public void getCachedSavedHistory(long userId, int beforeId, Utilities.Callback2<TLRPC.messages_Messages, Exception> callback) {
+        storageQueue.postRunnable(() -> {
+            ArrayList<Integer> ids = new ArrayList<>();
+            try {
+                SQLiteCursor cursor = database.queryFinalized("SELECT mid FROM messages_v2 WHERE uid = ? AND mid > 0 AND (? = 0 OR mid < ?) ORDER BY mid DESC LIMIT 100",
+                        userId, beforeId, beforeId);
+                try {
+                    while (cursor.next()) {
+                        ids.add(cursor.intValue(0));
+                    }
+                } finally {
+                    cursor.dispose();
+                }
+            } catch (Exception error) {
+                checkSQLException(error);
+                AndroidUtilities.runOnUIThread(() -> callback.run(null, error));
+                return;
+            }
+            getMessagesByIds(userId, ids, callback);
+        });
+    }
+
+    public void getMessagesByIds(long dialogId, ArrayList<Integer> messageIds,
+                                 Utilities.Callback2<TLRPC.messages_Messages, Exception> callback) {
+        ArrayList<Integer> ids = new ArrayList<>(messageIds);
+        long selfId = getUserConfig().getClientUserId();
+        storageQueue.postRunnable(() -> {
+            TLRPC.TL_messages_messages result = new TLRPC.TL_messages_messages();
+            ArrayList<Long> users = new ArrayList<>();
+            ArrayList<Long> chats = new ArrayList<>();
+            Exception error = null;
+            try {
+                for (int start = 0; start < ids.size(); start += 100) {
+                    int count = Math.min(100, ids.size() - start);
+                    StringBuilder sql = new StringBuilder("SELECT data, mid, date, read_state, send_state, custom_params, replydata FROM messages_v2 WHERE uid = ? AND mid IN (");
+                    Object[] args = new Object[count + 1];
+                    args[0] = dialogId;
+                    for (int i = 0; i < count; i++) {
+                        if (i != 0) {
+                            sql.append(',');
+                        }
+                        sql.append('?');
+                        args[i + 1] = ids.get(start + i);
+                    }
+                    sql.append(')');
+                    SQLiteCursor cursor = database.queryFinalized(sql.toString(), args);
+                    try {
+                        while (cursor.next()) {
+                            NativeByteBuffer data = cursor.byteBufferValue(0);
+                            if (data == null) {
+                                continue;
+                            }
+                            TLRPC.Message message;
+                            try {
+                                message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                                if (message != null) {
+                                    message.readAttachPath(data, selfId);
+                                }
+                            } finally {
+                                data.reuse();
+                            }
+                            if (message == null) {
+                                continue;
+                            }
+                            message.id = cursor.intValue(1);
+                            message.date = cursor.intValue(2);
+                            message.dialog_id = dialogId;
+                            MessageObject.setUnreadFlags(message, cursor.intValue(3));
+                            message.send_state = cursor.intValue(4);
+                            NativeByteBuffer params = cursor.byteBufferValue(5);
+                            if (params != null) {
+                                try {
+                                    MessageCustomParamsHelper.readLocalParams(message, params);
+                                } finally {
+                                    params.reuse();
+                                }
+                            }
+                            NativeByteBuffer reply = cursor.byteBufferValue(6);
+                            if (reply != null) {
+                                try {
+                                    message.replyMessage = TLRPC.Message.TLdeserialize(reply, reply.readInt32(false), false);
+                                    if (message.replyMessage != null) {
+                                        message.replyMessage.readAttachPath(reply, selfId);
+                                        addUsersAndChatsFromMessage(message.replyMessage, users, chats, null);
+                                    }
+                                } finally {
+                                    reply.reuse();
+                                }
+                            }
+                            addUsersAndChatsFromMessage(message, users, chats, null);
+                            result.messages.add(message);
+                        }
+                    } finally {
+                        cursor.dispose();
+                    }
+                }
+                if (!users.isEmpty()) {
+                    getUsersInternal(users, result.users);
+                }
+                if (!chats.isEmpty()) {
+                    getChatsInternal(TextUtils.join(",", chats), result.chats);
+                }
+            } catch (Exception e) {
+                error = e;
+                checkSQLException(e);
+            }
+            Exception failure = error;
+            AndroidUtilities.runOnUIThread(() -> callback.run(failure == null ? result : null, failure));
+        });
+    }
+
     public TLRPC.Message getMessage(long dialogId, long msgId) {
         CountDownLatch countDownLatch = new CountDownLatch(1);
         AtomicReference<TLRPC.Message> ref = new AtomicReference<>();

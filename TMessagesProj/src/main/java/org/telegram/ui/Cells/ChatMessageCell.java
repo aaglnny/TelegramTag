@@ -155,6 +155,7 @@ import org.telegram.tgnet.tl.TL_stars;
 import org.telegram.tgnet.tl.TL_stories;
 import org.telegram.ui.ActionBar.MessageDrawable;
 import org.telegram.ui.ActionBar.Theme;
+import org.telegram.ui.Components.LocalSavedTagsLayout;
 import org.telegram.ui.AvatarSpan;
 import org.telegram.ui.ChatActivity;
 import org.telegram.ui.Components.AnimatedEmojiDrawable;
@@ -556,6 +557,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     }
 
     public interface ChatMessageCellDelegate {
+        default void didPressLocalSavedTag(ChatMessageCell cell, long tagId) {
+        }
+
         default boolean isReplyOrSelf() {
             return false;
         }
@@ -1529,6 +1533,12 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     public boolean isBotForum;
     public boolean isSavedChat;
     public boolean isSavedPreviewChat;
+    private final LocalSavedTagsLayout localSavedTagsLayout = new LocalSavedTagsLayout();
+    private int localSavedTagsHeight;
+    private int localSavedTagsAccount = -1;
+    private long localSavedTagsDialogId;
+    private int localSavedTagsMessageId;
+    private int pressedLocalSavedTag = -1;
     public boolean isBot;
     public boolean isMegagroup;
     public boolean isForum;
@@ -4915,6 +4925,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
+        if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+            pressedLocalSavedTag = -1;
+        }
         if (currentMessageObject == null || delegate != null && !delegate.canPerformActions() || animationRunning) {
             if (currentMessageObject != null && currentMessageObject.preview) {
                 return checkTextSelection(event);
@@ -4922,6 +4935,30 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                 boolean r_reply = checkReplyTouchEvent(event);
                 boolean r_text = r_reply || checkTextSelection(event);
                 return r_reply || super.onTouchEvent(event);
+            }
+        }
+
+        if (hasLocalSavedTags()) {
+            int hit = localSavedTagsLayout.hit(event.getX(), event.getY());
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN && hit >= 0) {
+                pressedLocalSavedTag = hit;
+                lastTouchX = getEventX(event);
+                lastTouchY = getEventY(event);
+                startCheckLongPress();
+                return true;
+            } else if (pressedLocalSavedTag >= 0) {
+                if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                    cancelCheckLongPress();
+                    int pressed = pressedLocalSavedTag;
+                    pressedLocalSavedTag = -1;
+                    if (hit == pressed && delegate != null) {
+                        delegate.didPressLocalSavedTag(this, localSavedTagsLayout.getTagId(hit));
+                    }
+                } else if (event.getActionMasked() == MotionEvent.ACTION_MOVE && hit != pressedLocalSavedTag) {
+                    pressedLocalSavedTag = -1;
+                    cancelCheckLongPress();
+                }
+                return true;
             }
         }
 
@@ -6764,6 +6801,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     public MultiLayoutTypingAnimator botDraftTypingAnimator;
 
     private void setMessageContent(MessageObject messageObject, MessageObject.GroupedMessages groupedMessages, boolean bottomNear, boolean topNear, boolean firstInChat, boolean lastInChatList) {
+        if (localSavedTagsAccount != messageObject.currentAccount || localSavedTagsDialogId != messageObject.getDialogId()
+                || localSavedTagsMessageId != messageObject.getId()) {
+            setLocalSavedTags(messageObject, null);
+        }
         if (messageObject.checkLayout() || currentPosition != null && lastHeight != AndroidUtilities.displaySize.y) {
             currentMessageObject = null;
         }
@@ -13319,6 +13360,22 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
         isUpdating = true;
     }
 
+    public void setLocalSavedTags(MessageObject message, List<LocalSavedTagsLayout.Tag> tags) {
+        localSavedTagsAccount = message.currentAccount;
+        localSavedTagsDialogId = message.getDialogId();
+        localSavedTagsMessageId = message.getId();
+        localSavedTagsLayout.setTags(tags);
+        localSavedTagsHeight = 0;
+        pressedLocalSavedTag = -1;
+        accessibilityVirtualViewBounds.clear();
+        requestLayout();
+        invalidate();
+    }
+
+    private boolean hasLocalSavedTags() {
+        return localSavedTagsHeight > 0 && (currentPosition == null || currentMessagesGroup.isDocuments || currentPosition.last);
+    }
+
     public void setMessageObject(MessageObject messageObject,
                                  MessageObject.GroupedMessages groupedMessages,
                                  boolean bottomNear,
@@ -13684,11 +13741,20 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
             resultHeight = botDraftHeightController.getOverrideMeasureHeight(currentMessageObject, normHeight);
         }
 
-        additionalPaddingHeight = Math.max(0, resultHeight - normHeight);
+        localSavedTagsHeight = 0;
+        if (currentMessageObject != null && (currentPosition == null || currentMessagesGroup.isDocuments
+                || (currentPosition.flags & MessageObject.POSITION_FLAG_BOTTOM) != 0)) {
+            int availableWidth = Math.min(MeasureSpec.getSize(widthMeasureSpec) - dp(32),
+                    currentPosition != null && !currentMessagesGroup.isDocuments ? getGroupPhotosWidth() - dp(32) : Math.max(backgroundWidth - dp(8), dp(160)));
+            localSavedTagsLayout.measure(availableWidth, currentMessageObject.isOutOwner());
+            localSavedTagsHeight = localSavedTagsLayout.getHeight();
+        }
+        // 相册底行共同预留高度，气泡和组内图片仍使用原内容边界。
+        additionalPaddingHeight = Math.max(0, resultHeight - normHeight) + localSavedTagsHeight;
 
         setMeasuredDimension(
             isWidthAdaptive() ? getBoundsRight() - getBoundsLeft() : MeasureSpec.getSize(widthMeasureSpec),
-            resultHeight
+            resultHeight + localSavedTagsHeight
         );
     }
 
@@ -20355,6 +20421,18 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
         }
 
         canvas.restoreToCount(restore);
+
+        if (hasLocalSavedTags()) {
+            float width = localSavedTagsLayout.getWidth();
+            boolean out = currentMessageObject.isOutOwner();
+            float x = out ? getBackgroundDrawableRight() - width - dp(4) : getBackgroundDrawableLeft() + dp(4);
+            if (isWidthAdaptive()) {
+                x -= getBoundsLeft();
+            }
+            x = Math.max(dp(4), Math.min(x, getMeasuredWidth() - width - dp(4)));
+            float y = getMeasuredHeight() - localSavedTagsHeight + dp(4);
+            localSavedTagsLayout.draw(canvas, x, y, out, resourcesProvider);
+        }
     }
 
     public void drawBackgroundInternal(Canvas canvas, boolean fromParent) {
@@ -27008,6 +27086,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
 
     private class MessageAccessibilityNodeProvider extends AccessibilityNodeProvider {
 
+        public static final int LOCAL_TAGS_START = 1000000;
         public static final int RICH_MEDIA_START = 6000;
         public static final int PROFILE = 5000;
         public static final int LINK_IDS_START = 2000;
@@ -27387,6 +27466,11 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                     info.addChild(ChatMessageCell.this, TRANSCRIBE);
                 }
 
+                if (hasLocalSavedTags()) {
+                    for (int index = 0; index < localSavedTagsLayout.size(); index++) {
+                        info.addChild(ChatMessageCell.this, LOCAL_TAGS_START + index);
+                    }
+                }
                 int i;
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
                     if (isChat && currentUser != null && !currentMessageObject.isOut()) {
@@ -27479,7 +27563,23 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                 info.setSource(ChatMessageCell.this, virtualViewId);
                 info.setParent(ChatMessageCell.this);
                 info.setPackageName(getContext().getPackageName());
-                if (virtualViewId == PROFILE) {
+                if (virtualViewId >= LOCAL_TAGS_START) {
+                    int index = virtualViewId - LOCAL_TAGS_START;
+                    if (!hasLocalSavedTags() || index >= localSavedTagsLayout.size()) {
+                        return null;
+                    }
+                    info.setText(localSavedTagsLayout.getDescription(index));
+                    info.setContentDescription(localSavedTagsLayout.getDescription(index));
+                    info.setClassName("android.widget.Button");
+                    info.setEnabled(true);
+                    info.setClickable(true);
+                    info.addAction(AccessibilityNodeInfo.ACTION_CLICK);
+                    localSavedTagsLayout.getBounds(index).roundOut(rect);
+                    info.setBoundsInParent(rect);
+                    accessibilityVirtualViewBounds.put(virtualViewId, new Rect(rect));
+                    rect.offset(pos[0], pos[1]);
+                    info.setBoundsInScreen(rect);
+                } else if (virtualViewId == PROFILE) {
                     if (currentUser == null) {
                         return null;
                     }
@@ -27856,7 +27956,14 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                 if (action == AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS) {
                     sendAccessibilityEventForVirtualView(virtualViewId, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED);
                 } else if (action == AccessibilityNodeInfo.ACTION_CLICK) {
-                    if (virtualViewId == PROFILE) {
+                    if (virtualViewId >= LOCAL_TAGS_START) {
+                        int index = virtualViewId - LOCAL_TAGS_START;
+                        if (!hasLocalSavedTags() || index >= localSavedTagsLayout.size() || delegate == null) {
+                            return false;
+                        }
+                        delegate.didPressLocalSavedTag(ChatMessageCell.this, localSavedTagsLayout.getTagId(index));
+                        sendAccessibilityEventForVirtualView(virtualViewId, AccessibilityEvent.TYPE_VIEW_CLICKED);
+                    } else if (virtualViewId == PROFILE) {
                         if (delegate != null) {
                             delegate.didPressUserAvatar(ChatMessageCell.this, currentUser, 0, 0, false);
                         }

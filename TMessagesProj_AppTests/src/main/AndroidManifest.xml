@@ -3,5 +3,7 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:installLocation="auto">
 
-    <application android:name="org.telegram.messenger.ApplicationLoaderImpl" tools:replace="name"/>
+    <application android:name="org.telegram.messenger.ApplicationLoaderImpl" tools:replace="name">
+        <activity android:name="org.telegram.messenger.LocalSavedTagsTestActivity" android:exported="false" />
+    </application>
 </manifest>

@@ -755,6 +755,7 @@ public class MessagesController extends BaseController implements NotificationCe
     private CacheByChatsController cacheByChatsController;
     private TranslateController translateController;
     private AiTonesController tonesController;
+    private LocalSavedTagsController localSavedTagsController;
     public boolean uploadMarkupVideo;
     public boolean giftAttachMenuIcon;
     public boolean giftTextFieldIcon;
@@ -1020,6 +1021,16 @@ public class MessagesController extends BaseController implements NotificationCe
             tonesController = new AiTonesController(currentAccount);
         }
         return tonesController;
+    }
+
+    public synchronized LocalSavedTagsController getLocalSavedTagsController() {
+        if (localSavedTagsController == null || !localSavedTagsController.isActive()) {
+            if (localSavedTagsController != null) {
+                localSavedTagsController.cleanup();
+            }
+            localSavedTagsController = new LocalSavedTagsController(currentAccount);
+        }
+        return localSavedTagsController;
     }
 
     public boolean isCommunity(long dialogId) {
@@ -6455,6 +6466,10 @@ public class MessagesController extends BaseController implements NotificationCe
     }
 
     public void cleanup() {
+        if (localSavedTagsController != null) {
+            localSavedTagsController.cleanup();
+            localSavedTagsController = null;
+        }
         getContactsController().cleanup();
         MediaController.getInstance().cleanup();
         getNotificationsController().cleanup();
@@ -9498,7 +9513,12 @@ public class MessagesController extends BaseController implements NotificationCe
                 newTaskId = getMessagesStorage().createPendingTask(data);
             }
 
+            LocalSavedTagsController localTags = dialogId == getUserConfig().getClientUserId()
+                    && (mode == 0 || mode == ChatActivity.MODE_SAVED) ? getLocalSavedTagsController() : null;
             getConnectionsManager().sendRequest(req, (response, error) -> {
+                if (localTags != null) {
+                    localTags.onDeleteResponse(dialogId, req, response, error);
+                }
                 if (error == null) {
                     TLRPC.TL_messages_affectedMessages res = (TLRPC.TL_messages_affectedMessages) response;
                     processNewDifferenceParams(-1, res.pts, -1, res.pts_count);
@@ -10281,7 +10301,11 @@ public class MessagesController extends BaseController implements NotificationCe
                 req.revoke = revoke;
                 int max_id_delete_final = max_id_delete;
                 TLRPC.InputPeer peerFinal = peer;
+                LocalSavedTagsController localTags = did == getUserConfig().getClientUserId() ? getLocalSavedTagsController() : null;
                 getConnectionsManager().sendRequest(req, (response, error) -> {
+                    if (localTags != null) {
+                        localTags.onDeleteResponse(did, req, response, error);
+                    }
                     if (newTaskId != 0) {
                         getMessagesStorage().removePendingTask(newTaskId);
                     }
@@ -10315,6 +10339,7 @@ public class MessagesController extends BaseController implements NotificationCe
 
     protected void deleteSavedDialog(long did, int input_max_id, TLRPC.InputPeer monoForumPeer) {
         final long monoForumDid = DialogObject.getPeerDialogId(monoForumPeer);
+        LocalSavedTagsController localTags = monoForumDid == 0 ? getLocalSavedTagsController() : null;
         int[] max_id = new int[] { input_max_id };
         Runnable perform = () -> {
             if (monoForumDid == 0) {
@@ -10338,6 +10363,9 @@ public class MessagesController extends BaseController implements NotificationCe
                 req.max_id = max_id[0] <= 0 ? Integer.MAX_VALUE : max_id[0];
             }
             getConnectionsManager().sendRequest(req, (response, error) -> {
+                if (localTags != null) {
+                    localTags.onDeleteResponse(localTags.getUserId(), req, response, error);
+                }
                 if (error == null) {
                     TLRPC.TL_messages_affectedHistory res = (TLRPC.TL_messages_affectedHistory) response;
                     if (res.offset > 0) {
@@ -18473,6 +18501,7 @@ public class MessagesController extends BaseController implements NotificationCe
 
         int interfaceUpdateMask = 0;
         long clientUserId = getUserConfig().getClientUserId();
+        boolean localTagsTestBackend = getConnectionsManager().isTestBackend();
 
         for (int c = 0, size3 = updates.size(); c < size3; c++) {
             TLRPC.Update baseUpdate = updates.get(c);
@@ -21096,6 +21125,11 @@ public class MessagesController extends BaseController implements NotificationCe
                     }
                     getNotificationCenter().postNotificationName(NotificationCenter.messagesDeleted, arrayList, -dialogId, false);
                     if (dialogId == 0) {
+                        // 非频道删除更新使用账号全局消息编号；频道副本的同编号不进入此分支。
+                        if (clientUserId > 0 && getUserConfig().getClientUserId() == clientUserId
+                                && getConnectionsManager().isTestBackend() == localTagsTestBackend) {
+                            getLocalSavedTagsController().onMessagesDeleted(arrayList);
+                        }
                         for (int b = 0, size2 = arrayList.size(); b < size2; b++) {
                             Integer id = arrayList.get(b);
                             MessageObject obj = dialogMessagesByIds.get(id);
@@ -23096,7 +23130,11 @@ public class MessagesController extends BaseController implements NotificationCe
         req.max_date = maxDate;
         req.revoke = forAll;
 
+        LocalSavedTagsController localTags = dialogId == getUserConfig().getClientUserId() && channelId == 0 ? getLocalSavedTagsController() : null;
         getConnectionsManager().sendRequest(req, (response, error) -> {
+            if (localTags != null) {
+                localTags.onDeleteResponse(dialogId, req, response, error);
+            }
             if (error == null) {
                 TLRPC.TL_messages_affectedHistory res = (TLRPC.TL_messages_affectedHistory) response;
                 processNewDifferenceParams(-1, res.pts, -1, res.pts_count);
