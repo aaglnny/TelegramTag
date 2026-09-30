@@ -5,5 +5,6 @@
 
     <application android:name="org.telegram.messenger.ApplicationLoaderImpl" tools:replace="name">
         <activity android:name="org.telegram.messenger.LocalSavedTagsTestActivity" android:exported="false" />
+        <activity android:name="org.telegram.messenger.SavedLinkPreviewTestActivity" android:exported="false" />
     </application>
 </manifest>

@@ -940,6 +940,7 @@ public class ArticleViewer extends IArticleViewer implements NotificationCenter.
         private boolean maybeStartTracking;
         private boolean startedTracking;
         private boolean movingPage;
+        private boolean navigatingBack;
         private boolean openingPage;
         private int startMovingHeaderHeight;
         private int startedTrackingX;
@@ -1163,7 +1164,8 @@ public class ArticleViewer extends IArticleViewer implements NotificationCenter.
             maybeStartTracking = false;
             startedTracking = true;
             startedTrackingX = (int) ev.getX();
-            if (pagesStack.size() > 1 && (actionBar == null || !actionBar.isSearching() && !actionBar.isAddressing())) {
+            navigatingBack = keyboardVisible || actionBar != null && (actionBar.isSearching() || actionBar.isAddressing()) || pages[0] != null && pages[0].hasBackButton();
+            if (!navigatingBack && pagesStack.size() > 1) {
                 movingPage = true;
                 startMovingHeaderHeight = currentHeaderHeight;
                 pages[1].setVisibility(VISIBLE);
@@ -1203,7 +1205,7 @@ public class ArticleViewer extends IArticleViewer implements NotificationCenter.
                     lastWebviewAllowedScroll = pages[0] == null || !pages[0].isWeb() || pages[0].swipeContainer.allowingScroll(true) && !pages[0].swipeContainer.isScrolling;
                     if ((sheet == null || !sheet.nestedVerticalScroll) && maybeStartTracking && !startedTracking && dx >= AndroidUtilities.getPixelsInCM(0.4f, true) && Math.abs(dx) / 3 > dy && lastWebviewAllowedScroll) {
                         prepareForMoving(event);
-                    } else if (startedTracking) {
+                    } else if (startedTracking && !navigatingBack) {
                         pressedLinkOwnerLayout = null;
                         pressedLinkOwnerView = null;
                         if (movingPage && pages[0] != null) {
@@ -1222,14 +1224,30 @@ public class ArticleViewer extends IArticleViewer implements NotificationCenter.
                     tracker.computeCurrentVelocity(1000);
                     float velX = tracker.getXVelocity();
                     float velY = tracker.getYVelocity();
-                    if ((sheet == null || !sheet.nestedVerticalScroll) && !startedTracking && velX >= 3500 && velX > Math.abs(velY)) {
+                    if (event.getAction() == MotionEvent.ACTION_UP && (sheet == null || !sheet.nestedVerticalScroll) && !startedTracking && velX >= 3500 && velX > Math.abs(velY) && lastWebviewAllowedScroll) {
                         prepareForMoving(event);
+                    }
+                    if (startedTracking && navigatingBack) {
+                        // 网页回退只消费手势，不移动或销毁浏览器窗口。
+                        boolean goBack = event.getAction() == MotionEvent.ACTION_UP && lastWebviewAllowedScroll
+                            && (event.getX() - startedTrackingX >= getWidth() * .3f || velX >= 2500 && velX > Math.abs(velY));
+                        maybeStartTracking = false;
+                        startedTracking = false;
+                        navigatingBack = false;
+                        if (tracker != null) {
+                            tracker.recycle();
+                            tracker = null;
+                        }
+                        if (goBack) {
+                            onBackPressed();
+                        }
+                        return true;
                     }
                     if (startedTracking) {
                         View movingView = movingPage ? pages[0] : containerView;
                         float x = !movingPage && sheet != null ? sheet.getBackProgress() * sheet.windowView.getWidth() : movingView.getX();
 
-                        final boolean backAnimation = x < movingView.getMeasuredWidth() * .3f && (velX < 2500 || velX < velY) || !lastWebviewAllowedScroll;
+                        final boolean backAnimation = event.getAction() != MotionEvent.ACTION_UP || x < movingView.getMeasuredWidth() * .3f && (velX < 2500 || velX < velY) || !lastWebviewAllowedScroll;
                         float distToMove;
                         AnimatorSet animatorSet = new AnimatorSet();
                         if (!backAnimation) {
@@ -1318,6 +1336,7 @@ public class ArticleViewer extends IArticleViewer implements NotificationCenter.
                                     }
                                 }
                                 movingPage = false;
+                                navigatingBack = false;
                                 startedTracking = false;
                                 closeAnimationInProgress = false;
                             }
@@ -1328,6 +1347,7 @@ public class ArticleViewer extends IArticleViewer implements NotificationCenter.
                         maybeStartTracking = false;
                         startedTracking = false;
                         movingPage = false;
+                        navigatingBack = false;
                     }
                     if (tracker != null) {
                         tracker.recycle();
@@ -1337,6 +1357,7 @@ public class ArticleViewer extends IArticleViewer implements NotificationCenter.
                     maybeStartTracking = false;
                     startedTracking = false;
                     movingPage = false;
+                    navigatingBack = false;
                     if (tracker != null) {
                         tracker.recycle();
                         tracker = null;
@@ -1410,19 +1431,7 @@ public class ArticleViewer extends IArticleViewer implements NotificationCenter.
         @Override
         public boolean dispatchKeyEventPreIme(KeyEvent event) {
             if (event != null && event.getKeyCode() == KeyEvent.KEYCODE_BACK && event.getAction() == KeyEvent.ACTION_UP) {
-                if (actionBar.searchEditText.isFocused()) {
-                    actionBar.searchEditText.clearFocus();
-                    AndroidUtilities.hideKeyboard(actionBar.searchEditText);
-                } else if (actionBar.addressEditText.isFocused()) {
-                    actionBar.addressEditText.clearFocus();
-                    AndroidUtilities.hideKeyboard(actionBar.addressEditText);
-                } else if (keyboardVisible) {
-                    AndroidUtilities.hideKeyboard(this);
-                } else if (pages[0] != null && pages[0].isWeb() && pages[0].getWebView() != null && pages[0].getWebView().canGoBack()) {
-                    pages[0].getWebView().goBack();
-                } else {
-                    close(true, false);
-                }
+                onBackPressed();
                 return true;
             }
             return super.dispatchKeyEventPreIme(event);
@@ -4515,21 +4524,7 @@ public class ArticleViewer extends IArticleViewer implements NotificationCenter.
                 AndroidUtilities.runOnUIThread(lineProgressTickRunnable, 100);
             }
         };
-        actionBar.backButton.setOnClickListener(v -> {
-            if (actionBar.isSearching()) {
-                actionBar.showSearch(false, true);
-            } else if (actionBar.isAddressing()) {
-                actionBar.showAddress(false, true);
-            } else if (isFirstArticle() && pages[0].hasBackButton()) {
-                pages[0].back();
-            } else if (pagesStack.size() > 1) {
-                goBack();
-            } else if (sheet != null) {
-                sheet.dismiss(false);
-            } else {
-                close(true, true);
-            }
-        });
+        actionBar.backButton.setOnClickListener(v -> onBackPressed());
         actionBar.backButton.setOnLongClickListener(v -> {
             if (pages[0] == null) return false;
 
@@ -5902,8 +5897,50 @@ public class ArticleViewer extends IArticleViewer implements NotificationCenter.
         backgroundPaint.setColor(getThemedColor(Theme.key_iv_background));
     }
 
+    private void onBackPressed() {
+        if (closeAnimationInProgress || pageSwitchAnimation != null || windowView.startedTracking) {
+            return;
+        }
+        if (fullscreenVideoContainer.getVisibility() == View.VISIBLE) {
+            if (customView != null) {
+                fullscreenVideoContainer.setVisibility(View.INVISIBLE);
+                customViewCallback.onCustomViewHidden();
+                fullscreenVideoContainer.removeView(customView);
+                customView = null;
+            } else if (fullscreenedVideo != null) {
+                fullscreenedVideo.exitFullscreen();
+            }
+            return;
+        }
+        if (textSelectionHelper.isInSelectionMode()) {
+            textSelectionHelper.clear();
+            return;
+        }
+        if (keyboardVisible) {
+            actionBar.searchEditText.clearFocus();
+            actionBar.addressEditText.clearFocus();
+            AndroidUtilities.hideKeyboard(windowView);
+        } else if (actionBar.isSearching()) {
+            actionBar.showSearch(false, true);
+        } else if (actionBar.isAddressing()) {
+            actionBar.showAddress(false, true);
+        } else if (pages[0] != null && pages[0].hasBackButton()) {
+            pages[0].back();
+        } else if (pagesStack.size() > 1) {
+            goBack();
+        } else if (sheet != null) {
+            sheet.dismiss(false);
+        } else {
+            close(true, true);
+        }
+    }
+
     public void close(boolean byBackPress, boolean force) {
         if (parentActivity == null || closeAnimationInProgress || !isVisible || checkAnimation()) {
+            return;
+        }
+        if (byBackPress && !force) {
+            onBackPressed();
             return;
         }
         if (sheet != null) {
@@ -5946,12 +5983,6 @@ public class ArticleViewer extends IArticleViewer implements NotificationCenter.
             showProgressView(true, false);
         }
         saveCurrentPagePosition();
-        if (byBackPress && !force) {
-            if (removeLastPageFromStack()) {
-                return;
-            }
-        }
-
         NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.messagePlayingProgressDidChanged);
         NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.messagePlayingDidReset);
         NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.messagePlayingPlayStateChanged);
@@ -14685,16 +14716,10 @@ public class ArticleViewer extends IArticleViewer implements NotificationCenter.
         actionBar.setProgress(1, pages[1].getProgress());
         actionBar.setTransitionProgress(page1Alpha);
         if (!actionBar.isAddressing() && !actionBar.isSearching() && (windowView.movingPage || windowView.openingPage)) {
-            if (isFirstArticle() || pagesStack.size() > 1) {
-                final float backButton = lerp(pages[0].hasBackButton() || pagesStack.size() > 1 ? 1f : 0, pages[1].hasBackButton() || pagesStack.size() > 2 ? 1f : 0, page1Alpha);
-                actionBar.backButtonDrawable.setRotation(1f - backButton, false);
-                actionBar.forwardButtonDrawable.setState(false); // pages[0].hasForwardButton());
-                actionBar.setBackButtonCached(backButton > .5f);
-            } else {
-//                actionBar.backButtonDrawable.setRotation(1f - backButton, false);
-                actionBar.forwardButtonDrawable.setState(false); // pages[0].hasForwardButton());
-                actionBar.setBackButtonCached(false); // backButton > .5f);
-            }
+            final float backButton = lerp(pages[0].hasBackButton() || pagesStack.size() > 1 ? 1f : 0, pages[1].hasBackButton() || pagesStack.size() > 2 ? 1f : 0, page1Alpha);
+            actionBar.backButtonDrawable.setRotation(1f - backButton, false);
+            actionBar.forwardButtonDrawable.setState(false);
+            actionBar.setBackButtonCached(backButton > .5f);
             actionBar.setHasForward(pages[0].hasForwardButton());
             actionBar.setIsLocal(pages[0].isLocal());
             actionBar.setIsLoaded(pages[0].getWebView() != null && pages[0].getWebView().isPageLoaded());
@@ -14857,14 +14882,9 @@ public class ArticleViewer extends IArticleViewer implements NotificationCenter.
                     forwardButton = !last;
                     updateTitle(true);
                     if (PageLayout.this == pages[0] && !actionBar.isAddressing() && !actionBar.isSearching() && !(windowView.movingPage || windowView.openingPage)) {
-                        if (isFirstArticle() || pagesStack.size() > 1) {
-                            actionBar.backButtonDrawable.setRotation(backButton || pagesStack.size() > 1 ? 0 : 1, true);
-                            actionBar.setBackButtonCached(backButton || pagesStack.size() > 1);
-                            actionBar.forwardButtonDrawable.setState(false); // hasForwardButton());
-                        } else {
-                            actionBar.setBackButtonCached(false);
-                            actionBar.forwardButtonDrawable.setState(false);
-                        }
+                        actionBar.backButtonDrawable.setRotation(backButton || pagesStack.size() > 1 ? 0 : 1, true);
+                        actionBar.setBackButtonCached(backButton || pagesStack.size() > 1);
+                        actionBar.forwardButtonDrawable.setState(false);
                         actionBar.setHasForward(forwardButton);
                         actionBar.setIsTonsite(pages[0] != null && pages[0].isTonsite());
                         actionBar.setIsLocal(pages[0] != null && pages[0].isLocal());
@@ -15171,7 +15191,7 @@ public class ArticleViewer extends IArticleViewer implements NotificationCenter.
         }
 
         public boolean hasBackButton() {
-            return backButton;
+            return isWeb() && getWebView() != null && getWebView().canGoBack();
         }
 
         public void back() {
@@ -15831,27 +15851,7 @@ public class ArticleViewer extends IArticleViewer implements NotificationCenter.
 
         @Override
         public boolean onAttachedBackPressed() {
-            if (keyboardVisible) {
-                AndroidUtilities.hideKeyboard(windowView);
-                return true;
-            }
-            if (actionBar.isSearching()) {
-                actionBar.showSearch(false, true);
-                return true;
-            }
-            if (actionBar.isAddressing()) {
-                actionBar.showAddress(false, true);
-                return true;
-            }
-            if (isFirstArticle() && pages[0].hasBackButton()) {
-                pages[0].back();
-                return true;
-            }
-            if (pagesStack.size() > 1) {
-                goBack();
-                return true;
-            }
-            dismiss(false);
+            onBackPressed();
             return true;
         }
 

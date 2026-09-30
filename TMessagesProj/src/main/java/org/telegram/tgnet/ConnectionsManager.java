@@ -39,6 +39,7 @@ import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.PushListenerController;
+import org.telegram.messenger.SavedLinkPreviewController;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.StatsController;
 import org.telegram.messenger.UserConfig;
@@ -703,6 +704,7 @@ public class ConnectionsManager extends BaseController {
     }
 
     public void switchBackend(boolean restart) {
+        SavedLinkPreviewController.cleanupAccount(currentAccount);
         SharedPreferences preferences = MessagesController.getGlobalMainSettings();
         preferences.edit().remove("language_showed2").commit();
         native_switchBackend(currentAccount, restart);

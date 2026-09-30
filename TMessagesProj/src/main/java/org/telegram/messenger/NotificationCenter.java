@@ -377,6 +377,8 @@ public class NotificationCenter {
     public static final int communitySwitchedCollapsed = totalEvents++;
     public static final int localSavedTagsUpdated = totalEvents++;
     public static final int localSavedMessageTagsLoaded = totalEvents++;
+    public static final int savedLinkPreviewInvalidated = totalEvents++;
+    public static final int savedLinkReferencesCleared = totalEvents++;
 
     public static boolean alreadyLogged;
 

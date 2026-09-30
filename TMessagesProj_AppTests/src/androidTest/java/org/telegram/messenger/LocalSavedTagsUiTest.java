@@ -1839,12 +1839,31 @@ public class LocalSavedTagsUiTest {
     }
 
     private void longPressMessage(int id) throws Exception {
-        ChatMessageCell cell = waitCell(id);
-        Thread.sleep(400);
+        waitCell(id);
         int[] location = new int[2];
-        main(() -> cell.getLocationOnScreen(location));
-        float x = location[0] + cell.getWidth() - AndroidUtilities.dp(55);
-        float y = location[1] + Math.min(AndroidUtilities.dp(28), cell.getHeight() / 2f);
+        Rect bounds = new Rect();
+        Rect previous = new Rect();
+        int stable = 0;
+        long deadline = SystemClock.uptimeMillis() + 5000;
+        do {
+            main(() -> {
+                ChatMessageCell current = cell(id);
+                bounds.setEmpty();
+                if (current != null && current.isAttachedToWindow() && !current.isLayoutRequested()) {
+                    current.getLocationOnScreen(location);
+                    bounds.set(location[0], location[1], location[0] + current.getWidth(), location[1] + current.getHeight());
+                }
+            });
+            stable = !bounds.isEmpty() && bounds.equals(previous) ? stable + 1 : 0;
+            previous.set(bounds);
+            if (stable == 8) {
+                break;
+            }
+            Thread.sleep(60);
+        } while (SystemClock.uptimeMillis() < deadline);
+        assertEquals("长按目标尚未完成重绑与布局", 8, stable);
+        float x = bounds.right - AndroidUtilities.dp(55);
+        float y = bounds.top + Math.min(AndroidUtilities.dp(28), bounds.height() / 2f);
         long time = SystemClock.uptimeMillis();
         MotionEvent down = MotionEvent.obtain(time, time, MotionEvent.ACTION_DOWN, x, y, 0);
         MotionEvent up = MotionEvent.obtain(time, time + 700, MotionEvent.ACTION_UP, x, y, 0);
@@ -2010,18 +2029,35 @@ public class LocalSavedTagsUiTest {
             Thread.sleep(60);
         } while (SystemClock.uptimeMillis() < deadline);
         assertEquals("点击目标仍在动画中：" + text, 8, stable);
+        if (text.equals(text(R.string.LocalSavedTagsUntagged))) {
+            main(() -> {
+                android.view.ViewGroup bar = (android.view.ViewGroup) chatField("localSavedTagsView");
+                android.view.ViewGroup scroll = (android.view.ViewGroup) bar.getChildAt(0);
+                android.view.ViewGroup chips = (android.view.ViewGroup) scroll.getChildAt(0);
+                View chip = chips.getChildAt(1);
+                Rect actual = new Rect();
+                chip.getGlobalVisibleRect(actual);
+                assertTrue("点击时测试窗口已失去焦点", activity.hasWindowFocus());
+                assertEquals("无障碍坐标尚未同步到当前标签栏", actual, bounds);
+            });
+        }
         long time = SystemClock.uptimeMillis();
         MotionEvent down = MotionEvent.obtain(time, time, MotionEvent.ACTION_DOWN, bounds.centerX(), bounds.centerY(), 0);
-        MotionEvent up = MotionEvent.obtain(time, time + 40, MotionEvent.ACTION_UP, bounds.centerX(), bounds.centerY(), 0);
         down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        MotionEvent up = null;
         try {
             assertTrue(ui.injectInputEvent(down, true));
             Thread.sleep(40);
+            // 手势结束前处理已经入队的界面任务，不等待空态动画停止。
+            main(() -> assertTrue("手势期间测试页面已销毁", activity.getWindow().getDecorView().isAttachedToWindow()));
+            up = MotionEvent.obtain(time, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, bounds.centerX(), bounds.centerY(), 0);
+            up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
             assertTrue(ui.injectInputEvent(up, true));
         } finally {
             down.recycle();
-            up.recycle();
+            if (up != null) {
+                up.recycle();
+            }
         }
     }
 

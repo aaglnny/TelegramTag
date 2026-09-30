@@ -1492,6 +1492,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 NotificationCenter.getInstance(a).addObserver(MediaController.this, NotificationCenter.httpFileDidLoad);
                 NotificationCenter.getInstance(a).addObserver(MediaController.this, NotificationCenter.didReceiveNewMessages);
                 NotificationCenter.getInstance(a).addObserver(MediaController.this, NotificationCenter.messagesDeleted);
+                NotificationCenter.getInstance(a).addObserver(MediaController.this, NotificationCenter.savedLinkPreviewInvalidated);
                 NotificationCenter.getInstance(a).addObserver(MediaController.this, NotificationCenter.removeAllMessagesFromDialog);
                 NotificationCenter.getInstance(a).addObserver(MediaController.this, NotificationCenter.musicDidLoad);
                 NotificationCenter.getInstance(a).addObserver(MediaController.this, NotificationCenter.mediaDidLoad);
@@ -1824,6 +1825,17 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     @SuppressWarnings("unchecked")
     @Override
     public void didReceivedNotification(int id, int account, Object... args) {
+        if (id == NotificationCenter.savedLinkPreviewInvalidated) {
+            if (playingMessageObject != null && playingMessageObject.isSavedLinkPreview
+                    && playingMessageObject.currentAccount == account && playingMessageObject.getDialogId() == (Long) args[0]
+                    && playingMessageObject.getId() == (Integer) args[1]) {
+                cleanupPlayer(true, true);
+            }
+            return;
+        }
+        if (id == NotificationCenter.messagesDeleted && playingMessageObject != null && playingMessageObject.isSavedLinkPreview) {
+            return;
+        }
         if (id == NotificationCenter.fileLoaded || id == NotificationCenter.httpFileDidLoad) {
             String fileName = (String) args[0];
             if (playingMessageObject != null && playingMessageObject.currentAccount == account) {
@@ -2605,7 +2617,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     }
 
     private boolean isSamePlayingMessage(MessageObject messageObject) {
-        return playingMessageObject != null && playingMessageObject.getDialogId() == messageObject.getDialogId() && playingMessageObject.getId() == messageObject.getId() && ((playingMessageObject.eventId == 0) == (messageObject.eventId == 0));
+        return playingMessageObject != null && playingMessageObject.currentAccount == messageObject.currentAccount && playingMessageObject.getDialogId() == messageObject.getDialogId() && playingMessageObject.getId() == messageObject.getId() && ((playingMessageObject.eventId == 0) == (messageObject.eventId == 0));
     }
 
     public boolean seekToProgress(MessageObject messageObject, float progress) {
@@ -3616,7 +3628,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     }
 
     public boolean playMessage(final MessageObject messageObject, boolean silent) {
-        if (messageObject == null) {
+        if (messageObject == null || !SavedLinkPreviewController.isMediaValid(messageObject)) {
             return false;
         }
         isSilent = silent;
@@ -3630,7 +3642,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             }
             return true;
         }
-        if (!messageObject.isOut() && (messageObject.isContentUnread())) {
+        if (!messageObject.isSavedLinkPreview && !messageObject.isOut() && (messageObject.isContentUnread())) {
             MessagesController.getInstance(messageObject.currentAccount).markMessageContentAsRead(messageObject);
         }
         boolean saved = false;
@@ -3689,10 +3701,12 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         } else {
             downloadingCurrentMessage = false;
         }
-        if (messageObject.isMusic()) {
-            checkIsNextMusicFileDownloaded(messageObject.currentAccount);
-        } else {
-            checkIsNextVoiceFileDownloaded(messageObject.currentAccount);
+        if (!messageObject.isSavedLinkPreview) {
+            if (messageObject.isMusic()) {
+                checkIsNextMusicFileDownloaded(messageObject.currentAccount);
+            } else {
+                checkIsNextVoiceFileDownloaded(messageObject.currentAccount);
+            }
         }
         if (currentAspectRatioFrameLayout != null) {
             isDrawingWasReady = false;

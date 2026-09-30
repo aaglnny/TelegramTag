@@ -11261,4 +11261,27 @@
     <string name="LocalSavedTagsCoverage">%1$s · %2$d/%3$d</string>
     <string name="LocalSavedTagsMore">还有 %1$d 个标签</string>
     <string name="LocalSavedTagsAccessibility">本地标签：%1$s</string>
+    <string name="SavedLinkPreviewTitle">原消息预览</string>
+    <string name="SavedLinkLoading">正在加载原消息…</string>
+    <string name="SavedLinkUpdating">已缓存 · 正在更新…</string>
+    <string name="SavedLinkCached">已缓存</string>
+    <string name="SavedLinkUnavailable">原消息暂不可访问</string>
+    <string name="SavedLinkFailed">暂时无法更新，请重试</string>
+    <string name="SavedLinkRetry">重试</string>
+    <string name="SavedLinkRefresh">刷新</string>
+    <string name="SavedLinkExpand">展开正文</string>
+    <string name="SavedLinkCollapse">收起正文</string>
+    <string name="SavedLinkOpenOriginal">打开原消息</string>
+    <string name="SavedLinkNoText">此消息没有正文</string>
+    <string name="SavedLinkPhoto">图片</string>
+    <string name="SavedLinkVideo">视频</string>
+    <string name="SavedLinkVoice">语音</string>
+    <string name="SavedLinkSpecialMedia">此媒体需在原消息中查看</string>
+    <string name="SavedLinkAlbumMember">相册中的指定消息</string>
+    <string name="SavedLinkViewMedia">查看媒体</string>
+    <string name="SavedLinkPlay">播放</string>
+    <string name="SavedLinkPause">暂停</string>
+    <string name="SavedLinkMediaAtSource">请使用“打开原消息”查看</string>
+    <string name="SavedLinkMediaLoading">正在加载媒体…</string>
+    <string name="SavedLinkMediaRetry">加载失败，点击重试</string>
 </resources>

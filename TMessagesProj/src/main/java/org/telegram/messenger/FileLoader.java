@@ -1087,7 +1087,7 @@ public class FileLoader extends BaseController {
     public static boolean canSaveAsFile(Object parentObject) {
         if (parentObject instanceof MessageObject) {
             MessageObject messageObject = (MessageObject) parentObject;
-            if (!messageObject.isDocument() || messageObject.isRoundVideo() || messageObject.isVoice()) {
+            if (!messageObject.isDocument() || messageObject.isRoundVideo() || messageObject.isVoice() || messageObject.savedLinkProtected) {
                 return false;
             }
             return true;
@@ -1109,7 +1109,7 @@ public class FileLoader extends BaseController {
             }
             if (parentObject instanceof MessageObject) {
                 messageObject = (MessageObject) parentObject;
-                if (messageObject.isRoundVideo() || messageObject.isVoice() || messageObject.isAnyKindOfSticker() || messageObject.messageOwner.noforwards) {
+                if (messageObject.isRoundVideo() || messageObject.isVoice() || messageObject.isAnyKindOfSticker() || messageObject.messageOwner.noforwards || messageObject.savedLinkProtected) {
                     return false;
                 }
             } else {

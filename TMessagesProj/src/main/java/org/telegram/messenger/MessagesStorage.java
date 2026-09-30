@@ -7930,6 +7930,109 @@ public class MessagesStorage extends BaseController {
         });
     }
 
+    public void putSavedLinkMessages(long dialogId, TLRPC.messages_Messages result, Utilities.Callback<Exception> callback) {
+        long selfId = getUserConfig().getClientUserId();
+        ArrayList<TLRPC.Message> messages = new ArrayList<>(result.messages);
+        storageQueue.postRunnable(() -> {
+            Exception error = null;
+            boolean transaction = false;
+            SQLitePreparedStatement insert = null;
+            SQLitePreparedStatement update = null;
+            try {
+                if (dialogId >= 0 || selfId != getUserConfig().getClientUserId()) {
+                    throw new IllegalArgumentException("收藏预览的来源或账号已失效");
+                }
+                SQLiteCursor cursor = database.queryFinalized("SAVEPOINT saved_link_cache");
+                cursor.next();
+                cursor.dispose();
+                transaction = true;
+                // 预览只补正文缓存，不改已有已读状态、会话列表、下载队列或收藏标签。
+                insert = database.executeFast("INSERT OR IGNORE INTO messages_v2(mid, uid, read_state, send_state, out, imp, mention, is_channel) VALUES(?, ?, ?, 0, ?, 0, ?, ?)");
+                update = database.executeFast("UPDATE messages_v2 SET data = ?, date = ?, ttl = ?, media = ?, forwards = ?, group_id = ? WHERE mid = ? AND uid = ?");
+                int inbox = 0;
+                int outbox = 0;
+                cursor = database.queryFinalized("SELECT inbox_max, outbox_max FROM dialogs WHERE did = ?", dialogId);
+                try {
+                    if (cursor.next()) {
+                        inbox = cursor.intValue(0);
+                        outbox = cursor.intValue(1);
+                    }
+                } finally {
+                    cursor.dispose();
+                }
+                for (TLRPC.Message message : messages) {
+                    if (message.id <= 0 || message instanceof TLRPC.TL_messageEmpty || message.peer_id == null
+                            || message.peer_id.channel_id != -dialogId || message.dialog_id != dialogId) {
+                        throw new IllegalArgumentException("收藏预览缓存拒绝错误的来源消息");
+                    }
+                    insert.requery();
+                    insert.bindInteger(1, message.id);
+                    insert.bindLong(2, dialogId);
+                    insert.bindInteger(3, (message.id <= (message.out ? outbox : inbox) ? 1 : 0) | (message.media_unread ? 0 : 2));
+                    insert.bindInteger(4, message.out ? 1 : 0);
+                    insert.bindInteger(5, message.mentioned ? 1 : 0);
+                    insert.bindLong(6, -dialogId);
+                    if (insert.step() != 1) {
+                        throw new SQLiteException("收藏预览缓存写入未完成");
+                    }
+                    MessageObject.normalizeFlags(message);
+                    NativeByteBuffer data = new NativeByteBuffer(message.getObjectSize());
+                    try {
+                        message.serializeToStream(data);
+                        update.requery();
+                        update.bindByteBuffer(1, data);
+                        update.bindInteger(2, message.date);
+                        update.bindInteger(3, message.ttl);
+                        update.bindInteger(4, (message.flags & TLRPC.MESSAGE_FLAG_HAS_VIEWS) != 0 ? message.views : getMessageMediaType(message));
+                        update.bindInteger(5, message.forwards);
+                        if (message.grouped_id == 0) {
+                            update.bindNull(6);
+                        } else {
+                            update.bindLong(6, message.grouped_id);
+                        }
+                        update.bindInteger(7, message.id);
+                        update.bindLong(8, dialogId);
+                        if (update.step() != 1) {
+                            throw new SQLiteException("收藏预览缓存更新未完成");
+                        }
+                    } finally {
+                        data.reuse();
+                    }
+                }
+                putUsersInternal(result.users);
+                putChatsInternal(result.chats);
+                cursor = database.queryFinalized("RELEASE saved_link_cache");
+                cursor.next();
+                cursor.dispose();
+                transaction = false;
+            } catch (Exception e) {
+                error = e;
+                FileLog.e(e);
+            } finally {
+                if (insert != null) {
+                    insert.dispose();
+                }
+                if (update != null) {
+                    update.dispose();
+                }
+                if (transaction) {
+                    try {
+                        SQLiteCursor cursor = database.queryFinalized("ROLLBACK TO saved_link_cache");
+                        cursor.next();
+                        cursor.dispose();
+                        cursor = database.queryFinalized("RELEASE saved_link_cache");
+                        cursor.next();
+                        cursor.dispose();
+                    } catch (Exception e) {
+                        FileLog.e(e);
+                    }
+                }
+            }
+            Exception failure = error;
+            AndroidUtilities.runOnUIThread(() -> callback.run(failure));
+        });
+    }
+
     public TLRPC.Message getMessage(long dialogId, long msgId) {
         CountDownLatch countDownLatch = new CountDownLatch(1);
         AtomicReference<TLRPC.Message> ref = new AtomicReference<>();

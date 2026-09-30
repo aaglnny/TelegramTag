@@ -156,6 +156,7 @@ import org.telegram.tgnet.tl.TL_stories;
 import org.telegram.ui.ActionBar.MessageDrawable;
 import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.Components.LocalSavedTagsLayout;
+import org.telegram.ui.Components.SavedLinkPreviewView;
 import org.telegram.ui.AvatarSpan;
 import org.telegram.ui.ChatActivity;
 import org.telegram.ui.Components.AnimatedEmojiDrawable;
@@ -1538,6 +1539,11 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     private int localSavedTagsAccount = -1;
     private long localSavedTagsDialogId;
     private int localSavedTagsMessageId;
+    private SavedLinkPreviewView savedLinkPreviewView;
+    private int savedLinkPreviewHeight;
+    private int savedLinkCellId;
+    private long savedLinkCellDialog;
+    private int savedLinkCellAccount = -1;
     private int pressedLocalSavedTag = -1;
     public boolean isBot;
     public boolean isMegagroup;
@@ -6801,6 +6807,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     public MultiLayoutTypingAnimator botDraftTypingAnimator;
 
     private void setMessageContent(MessageObject messageObject, MessageObject.GroupedMessages groupedMessages, boolean bottomNear, boolean topNear, boolean firstInChat, boolean lastInChatList) {
+        if (savedLinkPreviewView != null && (savedLinkCellAccount != messageObject.currentAccount
+                || savedLinkCellDialog != messageObject.getDialogId() || savedLinkCellId != messageObject.getId())) {
+            setSavedLinkMessage(messageObject, null, null, false);
+        }
         if (localSavedTagsAccount != messageObject.currentAccount || localSavedTagsDialogId != messageObject.getDialogId()
                 || localSavedTagsMessageId != messageObject.getId()) {
             setLocalSavedTags(messageObject, null);
@@ -7458,7 +7468,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                         hasInvoicePrice = false;
                     }
                 }
-                hasLinkPreview = !messageObject.isRestrictedMessage && MessageObject.getMedia(messageObject.messageOwner) instanceof TLRPC.TL_messageMediaWebPage && MessageObject.getMedia(messageObject.messageOwner).webpage instanceof TLRPC.TL_webPage;
+                hasLinkPreview = !(savedLinkPreviewView != null && savedLinkPreviewView.hasPreview()) && !messageObject.isRestrictedMessage && MessageObject.getMedia(messageObject.messageOwner) instanceof TLRPC.TL_messageMediaWebPage && MessageObject.getMedia(messageObject.messageOwner).webpage instanceof TLRPC.TL_webPage;
                 TLRPC.WebPage webpage = hasLinkPreview ? MessageObject.getMedia(messageObject.messageOwner).webpage : null;
                 if (messageObject.isStoryMention()) {
                     hasLinkPreview = true;
@@ -13360,6 +13370,41 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
         isUpdating = true;
     }
 
+    public void setSavedLinkMessage(MessageObject cellMessage, MessageObject owner, ChatActivity parent, boolean display) {
+        savedLinkCellAccount = cellMessage.currentAccount;
+        savedLinkCellDialog = cellMessage.getDialogId();
+        savedLinkCellId = cellMessage.getId();
+        if (owner != null && savedLinkPreviewView == null) {
+            savedLinkPreviewView = new SavedLinkPreviewView(getContext(), resourcesProvider);
+            addView(savedLinkPreviewView);
+        }
+        if (savedLinkPreviewView != null) {
+            savedLinkPreviewView.bind(parent, owner, display, () -> {
+                if (currentMessageObject != null && currentMessageObject.currentAccount == savedLinkCellAccount
+                        && currentMessageObject.getDialogId() == savedLinkCellDialog && currentMessageObject.getId() == savedLinkCellId) {
+                    forceResetMessageObject();
+                    accessibilityVirtualViewBounds.clear();
+                    requestLayout();
+                    invalidate();
+                }
+            });
+        }
+    }
+
+    public SavedLinkPreviewView getSavedLinkPreviewView() {
+        return savedLinkPreviewView;
+    }
+
+    @Override
+    public boolean onInterceptTouchEvent(MotionEvent event) {
+        if (savedLinkPreviewView != null && savedLinkPreviewView.getVisibility() == VISIBLE
+                && event.getY() >= savedLinkPreviewView.getTop() && event.getY() < savedLinkPreviewView.getBottom()
+                && (!isCheckPressed || delegate != null && !delegate.canPerformActions())) {
+            return true;
+        }
+        return super.onInterceptTouchEvent(event);
+    }
+
     public void setLocalSavedTags(MessageObject message, List<LocalSavedTagsLayout.Tag> tags) {
         localSavedTagsAccount = message.currentAccount;
         localSavedTagsDialogId = message.getDialogId();
@@ -13749,12 +13794,28 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
             localSavedTagsLayout.measure(availableWidth, currentMessageObject.isOutOwner());
             localSavedTagsHeight = localSavedTagsLayout.getHeight();
         }
-        // 相册底行共同预留高度，气泡和组内图片仍使用原内容边界。
-        additionalPaddingHeight = Math.max(0, resultHeight - normHeight) + localSavedTagsHeight;
+        savedLinkPreviewHeight = 0;
+        if (savedLinkPreviewView != null && savedLinkPreviewView.getVisibility() != GONE) {
+            int cellWidth = MeasureSpec.getSize(widthMeasureSpec);
+            if (currentPosition != null && !currentMessagesGroup.isDocuments) {
+                for (MessageObject.GroupedMessagePosition position : currentMessagesGroup.posArray) {
+                    if (position.last) {
+                        cellWidth = (int) (getGroupPhotosWidth() * position.spanSize / 1000f);
+                        break;
+                    }
+                }
+            }
+            int availableWidth = Math.min(cellWidth - dp(32), dp(360));
+            savedLinkPreviewView.measure(MeasureSpec.makeMeasureSpec(Math.max(dp(48), availableWidth), MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+            savedLinkPreviewHeight = savedLinkPreviewView.getMeasuredHeight() + dp(8);
+        }
+        // 预览与标签位于气泡之后，相册底行共同保留原内容边界。
+        additionalPaddingHeight = Math.max(0, resultHeight - normHeight) + localSavedTagsHeight + savedLinkPreviewHeight;
 
         setMeasuredDimension(
             isWidthAdaptive() ? getBoundsRight() - getBoundsLeft() : MeasureSpec.getSize(widthMeasureSpec),
-            resultHeight + localSavedTagsHeight
+            resultHeight + localSavedTagsHeight + savedLinkPreviewHeight
         );
     }
 
@@ -13918,6 +13979,14 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
             forcedLayout = false;
         }
         lastSize = currentSize;
+
+        if (savedLinkPreviewHeight > 0) {
+            int width = savedLinkPreviewView.getMeasuredWidth();
+            int x = currentMessageObject.isOutOwner() ? getMeasuredWidth() - width - dp(12) : dp(isAvatarVisible ? 56 : 12);
+            x = Math.max(dp(4), Math.min(x, getMeasuredWidth() - width - dp(4)));
+            int y = getMeasuredHeight() - localSavedTagsHeight - savedLinkPreviewHeight + dp(4);
+            savedLinkPreviewView.layout(x, y, x + width, y + savedLinkPreviewView.getMeasuredHeight());
+        }
 
         if (currentMessageObject.type == MessageObject.TYPE_TEXT || currentMessageObject.type == MessageObject.TYPE_ARTICLE) {
             textY = dp(10) + namesOffset;
@@ -27470,6 +27539,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                     for (int index = 0; index < localSavedTagsLayout.size(); index++) {
                         info.addChild(ChatMessageCell.this, LOCAL_TAGS_START + index);
                     }
+                }
+                if (savedLinkPreviewView != null && savedLinkPreviewView.getVisibility() == VISIBLE) {
+                    info.addChild(savedLinkPreviewView);
                 }
                 int i;
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {

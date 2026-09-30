@@ -2212,8 +2212,15 @@ public class FileLoadOperation {
         }
     }
 
+    private int savedLinkReferenceAttempts;
+
     private void requestReference(RequestInfo requestInfo) {
         if (requestingReference) {
+            return;
+        }
+        if (parentObject instanceof MessageObject && ((MessageObject) parentObject).isSavedLinkPreview
+                && (!SavedLinkPreviewController.isMediaValid((MessageObject) parentObject) || savedLinkReferenceAttempts++ >= 2)) {
+            onFail(false, 0);
             return;
         }
         clearOperation(null, false, false);

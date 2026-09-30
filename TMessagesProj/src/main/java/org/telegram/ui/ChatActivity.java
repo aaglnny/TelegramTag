@@ -9437,6 +9437,46 @@ public class ChatActivity extends BaseFragment implements
     private int localTagScrollPosition;
     private int localTagScrollOffset;
     private int localTagScrollMessageId;
+    private final HashSet<Integer> expandedSavedLinks = new HashSet<>();
+
+    public boolean isSavedLinkExpanded(int savedMessageId) {
+        return expandedSavedLinks.contains(savedMessageId);
+    }
+
+    public void setSavedLinkExpanded(int savedMessageId, boolean expanded) {
+        if (expanded) {
+            expandedSavedLinks.add(savedMessageId);
+        } else {
+            expandedSavedLinks.remove(savedMessageId);
+        }
+        for (int i = 0; i < chatListView.getChildCount(); i++) {
+            View child = chatListView.getChildAt(i);
+            if (child instanceof ChatMessageCell && ((ChatMessageCell) child).getSavedLinkPreviewView() != null) {
+                ((ChatMessageCell) child).getSavedLinkPreviewView().updateExpanded(savedMessageId);
+            }
+        }
+    }
+
+    public void updateSavedLinkPreview(Runnable update) {
+        if (isFinished || chatListView == null || chatLayoutManager == null) {
+            return;
+        }
+        int position = chatLayoutManager.findFirstVisibleItemPosition();
+        View anchor = chatLayoutManager.findViewByPosition(position);
+        int offset = anchor == null ? 0 : getScrollingOffsetForView(anchor);
+        int messageId = anchor instanceof ChatMessageCell && ((ChatMessageCell) anchor).getMessageObject() != null
+                ? ((ChatMessageCell) anchor).getMessageObject().getId() : 0;
+        update.run();
+        if (position >= 0 && messageId != 0 && chatListView.getScrollState() == RecyclerView.SCROLL_STATE_IDLE) {
+            chatListView.post(() -> {
+                View current = chatLayoutManager.findViewByPosition(position);
+                if (!isFinished && chatListView.getScrollState() == RecyclerView.SCROLL_STATE_IDLE && current instanceof ChatMessageCell
+                        && ((ChatMessageCell) current).getMessageObject() != null && ((ChatMessageCell) current).getMessageObject().getId() == messageId) {
+                    chatLayoutManager.scrollToPositionWithOffset(position, offset);
+                }
+            });
+        }
+    }
 
     private void selectLocalSavedTag(long tagId) {
         if (getParentActivity() == null || isFinished) {
@@ -38042,6 +38082,18 @@ public class ChatActivity extends BaseFragment implements
                     //}
 
                     messageCell.setShowTopic(true);
+                    MessageObject linkOwner = message;
+                    boolean displaySavedLink = true;
+                    if (groupedMessages != null && !groupedMessages.isDocuments) {
+                        MessageObject.GroupedMessagePosition groupPosition = groupedMessages.positions.get(message);
+                        linkOwner = groupPosition != null && (groupPosition.flags & MessageObject.POSITION_FLAG_BOTTOM) != 0
+                                ? groupedMessages.findCaptionMessageObject() : null;
+                        displaySavedLink = groupPosition != null && groupPosition.last;
+                    }
+                    boolean savedLinks = getUserConfig().isClientActivated() && getDialogId() == getUserConfig().getClientUserId()
+                            && chatMode == MODE_DEFAULT && linkOwner != null && linkOwner.getId() > 0
+                            && linkOwner.getDialogId() == getUserConfig().getClientUserId() && !TextUtils.isEmpty(linkOwner.messageOwner.message);
+                    messageCell.setSavedLinkMessage(message, savedLinks ? linkOwner : null, savedLinks ? ChatActivity.this : null, displaySavedLink);
                     messageCell.setMessageObject(message, groupedMessages, pinnedBottom, pinnedTop, firstInChat, lastInChatList);
                     messageCell.setSpoilersSuppressed(chatListView.getScrollState() != RecyclerView.SCROLL_STATE_IDLE);
                     messageCell.setHighlighted(highlightMessageId != Integer.MAX_VALUE && message.getId() == highlightMessageId);

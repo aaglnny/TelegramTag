@@ -405,6 +405,36 @@ public class FileRefController extends BaseController {
         TLRPC.InputFileLocation location = locationAndKey.first;
         String locationKey = locationAndKey.second;
 
+        if (parentObject instanceof MessageObject && ((MessageObject) parentObject).isSavedLinkPreview) {
+            MessageObject source = (MessageObject) parentObject;
+            Requester requester = new Requester();
+            requester.args = args;
+            requester.location = location;
+            requester.locationKey = locationKey;
+            // 复用预览的来源请求和版本检查，文件位置仍由原加载器更新。
+            AndroidUtilities.runOnUIThread(() -> {
+                if (!SavedLinkPreviewController.isMediaValid(source)) {
+                    Utilities.stageQueue.postRunnable(() -> sendErrorToObject(args, 1));
+                    return;
+                }
+                SavedLinkPreviewController.getInstance(currentAccount).refreshMedia(source, (message, error) ->
+                        Utilities.stageQueue.postRunnable(() -> {
+                            if (error != null || !SavedLinkPreviewController.isMediaValid(source)) {
+                                sendErrorToObject(args, 1);
+                                return;
+                            }
+                            TLRPC.InputFileLocation[] replacement = new TLRPC.InputFileLocation[1];
+                            byte[] reference = getFileReferenceForMediaImpl(message.messageOwner.media, location, new boolean[1], replacement);
+                            if (reference == null) {
+                                sendErrorToObject(args, 1);
+                            } else {
+                                onUpdateObjectReference(requester, reference, replacement[0], false);
+                            }
+                        }));
+            });
+            return;
+        }
+
         if (parentObject instanceof MessageObject) {
             MessageObject messageObject = (MessageObject) parentObject;
             if (messageObject.getRealId() < 0 && messageObject.messageOwner != null && messageObject.messageOwner.media != null && messageObject.messageOwner.media.webpage != null) {
@@ -2036,6 +2066,9 @@ public class FileRefController extends BaseController {
     }
 
     public boolean applyCachedFileReference(Object parentObject, Object... args) {
+        if (parentObject instanceof MessageObject && ((MessageObject) parentObject).isSavedLinkPreview) {
+            return false;
+        }
         final Pair<TLRPC.InputFileLocation, String> locationAndKey = getLocationAndKey(parentObject, args);
         if (locationAndKey == null) {
             return false;
